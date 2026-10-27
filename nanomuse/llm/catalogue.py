@@ -15,6 +15,7 @@ stands in, so gating still works; one log line says so.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -360,6 +361,226 @@ def protocol_provider(protocol: str) -> str | None:
     return PROTOCOL_PROVIDERS.get(protocol)
 
 
+#: protocols a catalogue entry may name (the runtime speaks the first three directly;
+#: ``anthropic`` is carried by OpenRouter in the OpenAI shape, see PROTOCOL_PROVIDERS)
+_KNOWN_PROTOCOLS: tuple[str, ...] = ("openai", "openai-responses", "anthropic", "gemini")
+#: auth kinds the file may name when it does not carry its own ``auth_kinds`` list
+_KNOWN_AUTH_KINDS: tuple[str, ...] = (
+    "key",
+    "none",
+    "oauth-chatgpt",
+    "oauth-claude",
+    "oauth-openrouter",
+    "device-kimi",
+)
+#: keys a ``defaults`` entry may carry, and which capability each one serves
+_DEFAULT_KEYS: tuple[str, ...] = ("chat", "hands", "image", "video")
+_CAPABILITY_DEFAULTS: dict[str, str] = {
+    "chat": "chat",
+    "vision": "hands",
+    "image": "image",
+    "video": "video",
+}
+#: ``verified`` is a month (or a day) in ISO form, so a stale entry is visible at a glance
+_VERIFIED_RE = re.compile(r"^\d{4}-\d{2}(-\d{2})?$")
+#: hosts that mean "a server of one's own": no key page and no defaults are required of them
+_LOCAL_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
+#: fields a provider entry may carry beyond the ``Provider`` dataclass (the reasoning
+#: block is read by the reasoning-effort code, not by the catalogue itself)
+_EXTRA_PROVIDER_FIELDS: frozenset[str] = frozenset({"reasoning"})
+
+
+def _is_http_url(value: Any) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    parsed = urlparse(value)
+    return parsed.scheme in ("http", "https") and bool(parsed.hostname)
+
+
+def _host_of(url: Any) -> str:
+    if not isinstance(url, str):
+        return ""
+    return (urlparse(url).hostname or "").lower()
+
+
+def _check_reasoning(raw: Any, where: str, errors: list[str]) -> None:
+    if not isinstance(raw, dict):
+        errors.append(f"{where}: 'reasoning' must be an object")
+        return
+    if not _is_http_url(raw.get("doc")):
+        errors.append(f"{where}: 'reasoning.doc' must be an http(s) URL")
+    if not isinstance(raw.get("wire"), str) or not raw["wire"]:
+        errors.append(f"{where}: 'reasoning.wire' must be a non-empty string")
+    rules = raw.get("rules")
+    if rules is None:
+        return
+    if not isinstance(rules, list):
+        errors.append(f"{where}: 'reasoning.rules' must be a list")
+        return
+    for i, rule in enumerate(rules):
+        if not isinstance(rule, dict):
+            errors.append(f"{where}: 'reasoning.rules[{i}]' must be an object")
+            continue
+        pattern = rule.get("models")
+        if not isinstance(pattern, str) or not pattern:
+            errors.append(f"{where}: 'reasoning.rules[{i}].models' must be a non-empty string")
+        else:
+            try:
+                re.compile(pattern)
+            except re.error:
+                errors.append(f"{where}: 'reasoning.rules[{i}].models' is not a valid regex")
+        levels = rule.get("levels")
+        if (
+            not isinstance(levels, list)
+            or not levels
+            or not all(isinstance(level, str) and level for level in levels)
+        ):
+            errors.append(f"{where}: 'reasoning.rules[{i}].levels' must be a non-empty list")
+
+
+def validate_catalogue(data: Any) -> list[str]:
+    """Every field the catalogue promises, checked against the raw JSON.
+
+    A missing or mistyped field is an error here, not a silent fallback: the runtime
+    reads this file to decide which features exist, so a catalogue that says less
+    than it means must fail loudly (a test runs this over the packaged file). The
+    checks only constrain what the file *says*; nothing here calls a vendor. Returns
+    the errors, empty when the catalogue is well formed.
+    """
+    errors: list[str] = []
+    if not isinstance(data, dict):
+        return ["catalogue must be a JSON object"]
+    version = data.get("version")
+    if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+        errors.append("'version' must be a positive integer")
+    if "capabilities" in data:
+        caps = data["capabilities"]
+        if not isinstance(caps, list) or [str(c) for c in caps] != list(CAPABILITIES):
+            errors.append(f"'capabilities' must be {list(CAPABILITIES)}")
+    auth_kinds = data.get("auth_kinds")
+    if auth_kinds is not None:
+        if (
+            not isinstance(auth_kinds, list)
+            or not auth_kinds
+            or not all(isinstance(k, str) and k for k in auth_kinds)
+        ):
+            errors.append("'auth_kinds' must be a non-empty list of strings")
+            auth_kinds = None
+    allowed_auth = set(auth_kinds) if auth_kinds is not None else set(_KNOWN_AUTH_KINDS)
+    providers = data.get("providers")
+    if not isinstance(providers, list) or not providers:
+        errors.append("'providers' must be a non-empty list")
+        return errors
+    known_fields = set(Provider.__dataclass_fields__) | _EXTRA_PROVIDER_FIELDS
+    seen_ids: set[str] = set()
+    for index, raw in enumerate(providers):
+        if not isinstance(raw, dict):
+            errors.append(f"providers[{index}] must be an object")
+            continue
+        pid = raw.get("id")
+        where = f"provider '{pid}'" if isinstance(pid, str) and pid else f"providers[{index}]"
+        if not isinstance(pid, str) or not pid.strip():
+            errors.append(f"{where}: 'id' must be a non-empty string")
+            continue
+        if pid in seen_ids:
+            errors.append(f"{where}: duplicate id")
+        seen_ids.add(pid)
+        for key in raw:
+            if key not in known_fields:
+                errors.append(f"{where}: unknown field '{key}'")
+        if not isinstance(raw.get("name"), str) or not raw["name"].strip():
+            errors.append(f"{where}: 'name' must be a non-empty string")
+        protocol = raw.get("protocol")
+        if protocol not in _KNOWN_PROTOCOLS:
+            errors.append(f"{where}: 'protocol' must be one of {list(_KNOWN_PROTOCOLS)}")
+        capabilities = raw.get("capabilities")
+        if (
+            not isinstance(capabilities, list)
+            or not capabilities
+            or not all(isinstance(c, str) for c in capabilities)
+        ):
+            errors.append(f"{where}: 'capabilities' must be a non-empty list of strings")
+            capabilities = []
+        for capability in capabilities:
+            if capability not in CAPABILITIES:
+                errors.append(f"{where}: unknown capability '{capability}'")
+        auth = raw.get("auth")
+        if (
+            not isinstance(auth, list)
+            or not auth
+            or not all(isinstance(a, str) and a for a in auth)
+        ):
+            errors.append(f"{where}: 'auth' must be a non-empty list of strings")
+            auth = []
+        for kind in auth:
+            if kind not in allowed_auth:
+                errors.append(f"{where}: unknown auth kind '{kind}'")
+        regions = raw.get("regions")
+        if (
+            not isinstance(regions, list)
+            or not regions
+            or not all(isinstance(r, str) and r for r in regions)
+        ):
+            errors.append(f"{where}: 'regions' must be a non-empty list of strings")
+        user_capabilities = raw.get("user_capabilities") is True
+        base_url = raw.get("base_url")
+        local = _host_of(base_url) in _LOCAL_HOSTS
+        if user_capabilities:
+            if base_url not in (None, "") and not _is_http_url(base_url):
+                errors.append(f"{where}: 'base_url' must be an http(s) URL when present")
+        elif not _is_http_url(base_url):
+            errors.append(f"{where}: 'base_url' must be an http(s) URL")
+        for url_key in ("base_url_global", "key_url", "key_url_global"):
+            if raw.get(url_key) not in (None, "") and not _is_http_url(raw[url_key]):
+                errors.append(f"{where}: '{url_key}' must be an http(s) URL when present")
+        if "key" in auth and not user_capabilities and not local and not raw.get("key_url"):
+            errors.append(f"{where}: 'key_url' is required when 'auth' includes 'key'")
+        defaults = raw.get("defaults")
+        if defaults is None:
+            defaults = {}
+        if not isinstance(defaults, dict):
+            errors.append(f"{where}: 'defaults' must be an object")
+            defaults = {}
+        for key, value in defaults.items():
+            if key not in _DEFAULT_KEYS:
+                errors.append(f"{where}: unknown defaults key '{key}'")
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"{where}: defaults['{key}'] must be a non-empty string")
+        if not user_capabilities and not local:
+            for capability, key in _CAPABILITY_DEFAULTS.items():
+                if capability in capabilities and key not in defaults:
+                    errors.append(
+                        f"{where}: defaults['{key}'] is required for capability '{capability}'"
+                    )
+        auth_capabilities = raw.get("auth_capabilities")
+        if auth_capabilities is not None:
+            if not isinstance(auth_capabilities, dict):
+                errors.append(f"{where}: 'auth_capabilities' must be an object")
+            else:
+                for kind, narrowed in auth_capabilities.items():
+                    if kind not in auth:
+                        errors.append(f"{where}: 'auth_capabilities' key '{kind}' is not in 'auth'")
+                    if not isinstance(narrowed, list) or not all(
+                        isinstance(c, str) for c in narrowed
+                    ):
+                        errors.append(
+                            f"{where}: 'auth_capabilities['{kind}']' must be a list of strings"
+                        )
+                    else:
+                        for capability in narrowed:
+                            if capability not in CAPABILITIES:
+                                errors.append(
+                                    f"{where}: unknown capability '{capability}' in "
+                                    f"'auth_capabilities['{kind}']'"
+                                )
+        verified = raw.get("verified")
+        if not isinstance(verified, str) or not _VERIFIED_RE.fullmatch(verified):
+            errors.append(f"{where}: 'verified' must be 'YYYY-MM' or 'YYYY-MM-DD'")
+        if "reasoning" in raw:
+            _check_reasoning(raw["reasoning"], where, errors)
+    return errors
+
+
 __all__ = [
     "CAPABILITIES",
     "CATALOGUE_FILE",
@@ -372,4 +593,5 @@ __all__ = [
     "load_file",
     "parse",
     "protocol_provider",
+    "validate_catalogue",
 ]
