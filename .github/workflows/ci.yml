@@ -1,4 +1,5 @@
 name: Test Suite
+# Fork-only CI verification: comment only, no workflow behavior change. PR will be closed without merging.
 
 on:
   push:
