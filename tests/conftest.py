@@ -45,6 +45,23 @@ def _example_hosts_resolve_offline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
 
 
+#: proxy variables, in both cases: a shell behind a corporate proxy (or a runtime
+#: whose NO_PROXY carries bracketed IPv6 literals) made httpx fail in test setup
+#: with ``Invalid port: ':1]'`` before any test code ran. Clearing them here is what
+#: keeps the suite green on such machines; a test that needs a proxy uses the
+#: ``dead_proxy`` fixture (or sets the variables itself) instead of the ambient ones.
+_PROXY_VARIABLES: tuple[str, ...] = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+)
+
+
 @pytest.fixture(autouse=True)
 def _own_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """The developer's shell does not reach the tests.
@@ -52,10 +69,16 @@ def _own_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     ``load_settings`` honours ``NANOMUSE_*`` and the provider key variables over the
     config file, so a ``NANOMUSE_DATA_DIR`` exported for a trial run sent a test's skills
     into that data directory, and an exported ``OPENAI_API_KEY`` shows a "no key" test a
-    key. Each test starts without them; one that needs a variable sets it itself.
+    key. The proxy variables go too: httpx reads them when a client is built, and a
+    ``NO_PROXY`` with bracketed IPv6 literals breaks that build on the whole suite.
+    Each test starts without them; one that needs a variable sets it itself.
     """
     for name in list(os.environ):
-        if name.startswith("NANOMUSE_") or name in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY"):
+        if (
+            name.startswith("NANOMUSE_")
+            or name in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY")
+            or name in _PROXY_VARIABLES
+        ):
             monkeypatch.delenv(name, raising=False)
 
 
@@ -68,17 +91,7 @@ def dead_proxy(monkeypatch: pytest.MonkeyPatch) -> str:
     test that passes proves the call went straight to the loopback. ``NO_PROXY`` is cleared
     first, since a developer's shell may carry one that would hide the bug again.
     """
-    names = (
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "NO_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-        "no_proxy",
-    )
-    for name in names:
+    for name in _PROXY_VARIABLES:
         monkeypatch.delenv(name, raising=False)
     for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
         monkeypatch.setenv(name, "http://127.0.0.1:9")
