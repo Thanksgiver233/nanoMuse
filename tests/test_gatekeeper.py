@@ -94,6 +94,8 @@ _CASES = [
 
 @pytest.fixture()
 async def supervisor(tmp_path: Path):
+    if sys.platform != "linux":
+        pytest.skip("the gatekeeper prototype needs Linux socket APIs")
     key = secrets.token_bytes(32)
     sup = GatekeeperSupervisor(
         tmp_path / "gatekeeper.sock",
@@ -134,6 +136,9 @@ def test_decisions_match_the_in_process_policy(supervisor, client):
         assert again.decision == advice.decision, (tool, args, tainted)
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="the gatekeeper prototype needs Linux socket APIs"
+)
 async def test_a_persistent_grant_survives_a_restart(tmp_path: Path):
     from nanomuse.sentinel.grants import GrantStore
 
@@ -286,6 +291,9 @@ def test_the_ipc_round_trip_is_fast_enough_for_a_local_decision(
     assert p95 < 20, f"p95 {p95:.2f}ms exceeds the 20ms budget: {samples}"
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="the gatekeeper prototype needs Linux socket APIs"
+)
 async def test_the_supervisor_restarts_a_crashed_gatekeeper(tmp_path: Path):
     key = secrets.token_bytes(32)
     sup = GatekeeperSupervisor(
@@ -317,6 +325,9 @@ def test_gatekeeper_sentinel_front_end_matches_policy(supervisor, client):
         )
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="the gatekeeper prototype needs Linux socket APIs"
+)
 def test_the_platform_helpers_find_the_linux_apis():
     assert _unix_socket_family() == socket.AF_UNIX
     assert _peer_cred_option() == socket.SO_PEERCRED
