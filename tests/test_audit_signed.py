@@ -188,13 +188,17 @@ def test_the_default_key_is_its_own_file_not_the_vault_key(
     key_file = tmp_path / "audit.key"
     assert key_file.exists()
     assert key_file.read_bytes() != b"vault-secret"
-    assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
+    if sys.platform != "win32":
+        # Windows has no mode bits: a file written 0600 still reports 0666.
+        # The access list is checked instead (see _windows_key_file_is_private).
+        assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
     assert log.key_source == "file"
     fresh = AuditLog(tmp_path / "audit.jsonl")
     assert fresh.verify().ok
     assert fresh.key_source == "file"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="mode bits carry no meaning on Windows")
 def test_a_key_file_readable_by_others_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -202,6 +206,61 @@ def test_a_key_file_readable_by_others_is_refused(
     key_file = tmp_path / "audit.key"
     key_file.write_text(KEY.hex(), encoding="utf-8")
     os.chmod(key_file, 0o644)
+    log = AuditLog(tmp_path / "audit.jsonl")
+    with pytest.raises(PermissionError, match="readable by others"):
+        log.record("tool_call", tool="shell")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="mode bits carry no meaning on Windows")
+def test_a_key_file_with_mode_0666_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 0666 is what every file reports on Windows, so it must still refuse here.
+    _no_keychain(monkeypatch)
+    key_file = tmp_path / "audit.key"
+    key_file.write_text(KEY.hex(), encoding="utf-8")
+    os.chmod(key_file, 0o666)
+    log = AuditLog(tmp_path / "audit.jsonl")
+    with pytest.raises(PermissionError, match="readable by others"):
+        log.record("tool_call", tool="shell")
+
+
+def _simulate_windows(monkeypatch: pytest.MonkeyPatch, acl_private: bool) -> None:
+    """Run the key-file check down the Windows path, on any platform.
+
+    The real DACL read needs Windows, so the checker itself is stubbed and
+    only the dispatch and the accept/refuse behaviour are exercised here;
+    Windows CI runs the real checker.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        "nanomuse.sentinel.audit._windows_key_file_is_private",
+        lambda path: acl_private,
+    )
+
+
+def test_a_key_file_with_loose_mode_bits_is_accepted_on_windows_when_the_acl_is_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_keychain(monkeypatch)
+    _simulate_windows(monkeypatch, acl_private=True)
+    key_file = tmp_path / "audit.key"
+    key_file.write_text(KEY.hex(), encoding="utf-8")
+    os.chmod(key_file, 0o666)
+    log = AuditLog(tmp_path / "audit.jsonl")
+    log.record("tool_call", tool="shell")
+    assert log.key_source == "file"
+    assert AuditLog(tmp_path / "audit.jsonl").verify().ok
+
+
+def test_a_key_file_with_a_broad_acl_is_refused_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _no_keychain(monkeypatch)
+    _simulate_windows(monkeypatch, acl_private=False)
+    key_file = tmp_path / "audit.key"
+    key_file.write_text(KEY.hex(), encoding="utf-8")
+    os.chmod(key_file, 0o666)
     log = AuditLog(tmp_path / "audit.jsonl")
     with pytest.raises(PermissionError, match="readable by others"):
         log.record("tool_call", tool="shell")
