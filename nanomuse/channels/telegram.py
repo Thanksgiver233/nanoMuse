@@ -14,6 +14,7 @@ default) the bot only hears messages that @-mention it or reply to it, which mat
 from __future__ import annotations
 
 import asyncio
+import hmac
 import mimetypes
 from contextlib import suppress
 from pathlib import Path
@@ -52,6 +53,12 @@ class TelegramChannel(Channel):
         Field("bot_token", "Bot token", "secret", required=True, help="From @BotFather, /newbot"),
         Field(
             "proxy", "Proxy", help="Optional, e.g. socks5://127.0.0.1:1080 or http://127.0.0.1:7890"
+        ),
+        Field(
+            "webhook_secret",
+            "Webhook secret",
+            "secret",
+            help="Optional: when set, webhook updates must carry it as X-Telegram-Bot-Api-Secret-Token",
         ),
     )
 
@@ -167,6 +174,24 @@ class TelegramChannel(Channel):
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("telegram: update failed: {}", self._redact(str(exc)))
 
+    # ------------------------------------------------------------------ webhook
+    def verify_webhook_secret(self, presented: str | None) -> bool:
+        """The secret Telegram sends with a webhook update, compared in constant
+        time. No secret configured means webhooks are not accepted at all: the
+        channel polls, and anything claiming to be a webhook is refused."""
+        expected = str(self.settings.get("webhook_secret") or "")
+        if not expected or presented is None:
+            return False
+        return hmac.compare_digest(presented, expected)
+
+    async def handle_webhook(self, payload: dict[str, Any], secret: str | None) -> None:
+        """One update delivered by webhook instead of polling: verified first,
+        handled exactly like a polled update after. A failed verification
+        raises and nothing reaches the bus."""
+        if not self.verify_webhook_secret(secret):
+            raise TelegramError("webhook secret does not match")
+        await self._handle_update(payload)
+
     # ------------------------------------------------------------------ inbound
     async def _handle_update(self, update: dict[str, Any]) -> None:
         if self.bus is None:
@@ -241,11 +266,20 @@ class TelegramChannel(Channel):
 
     async def _handle_callback(self, callback: dict[str, Any]) -> None:
         assert self.bus is not None
+        sender = callback.get("from") or {}
+        if sender.get("is_bot"):
+            return
         raw = str(callback.get("data") or "")
         value: dict[str, Any] = {}
         if raw.startswith("a:") and raw.count(":") >= 2:
             _, decision, approval_id = raw.split(":", 2)
-            value = {"approval": approval_id, "decision": "allow" if decision == "y" else "deny"}
+            message = callback.get("message") or {}
+            chat = message.get("chat") or {}
+            value = {
+                "approval": approval_id,
+                "decision": "allow" if decision == "y" else "deny",
+                "is_group": chat.get("type") in ("group", "supergroup"),
+            }
         message = callback.get("message") or {}
         chat_id = str((message.get("chat") or {}).get("id") or "")
         sender_id = str((callback.get("from") or {}).get("id") or "")

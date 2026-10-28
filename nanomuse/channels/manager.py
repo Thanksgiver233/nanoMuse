@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import re
 import time
+from collections import deque
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -25,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 from nanomuse.background import keep_task
 from nanomuse.channels.base import Channel, ChannelBus, ChannelStatus, InboundMessage
 from nanomuse.channels.dingtalk import DingTalkChannel
+from nanomuse.channels.discretion import DiscretionMatrix, DiscretionQuery
 from nanomuse.channels.feishu import FeishuChannel
 from nanomuse.channels.store import ChannelSettingsStore, PairingStore
 from nanomuse.channels.telegram import TelegramChannel
@@ -120,6 +122,15 @@ class ChannelManager(ChannelBus):
         self._live: dict[str, _Live] = {}
         # "channel:chat" -> approval ids waiting for a word from that chat (latest last)
         self._asks: dict[str, list[str]] = {}
+        # approval id -> the (channel, chat) the card was asked in: an answer from
+        # anywhere else is ignored, so one chat cannot settle another's approval
+        self._ask_origins: dict[str, tuple[str, str]] = {}
+        # message ids already handled, per channel and chat: a redelivered message
+        # is dropped, so its side effects run once (at most the last 1000 kept)
+        self._seen_messages: deque[str] = deque(maxlen=1000)
+        self._seen_set: set[str] = set()
+        # the discretion matrix: what each chat may do (groups never approve)
+        self.matrix = DiscretionMatrix()
         # "channel:chat" -> the thread whose question was delivered there
         self._questions: dict[str, str] = {}
         self._artifacts: dict[str, list[str]] = {}
@@ -269,6 +280,16 @@ class ChannelManager(ChannelBus):
         if channel is None:
             return
         key = f"{msg.channel}:{msg.chat_id}"
+        # a vendor that delivers the same message twice must not run it twice
+        if msg.message_id:
+            dedup = f"{key}:{msg.message_id}"
+            if dedup in self._seen_set:
+                logger.debug("channel {}: dropping redelivery of {}", msg.channel, dedup)
+                return
+            if len(self._seen_messages) == self._seen_messages.maxlen:
+                self._seen_set.discard(self._seen_messages[0])
+            self._seen_messages.append(dedup)
+            self._seen_set.add(dedup)
         if not self._allowed(msg):
             if msg.is_group:
                 logger.debug(
@@ -282,7 +303,19 @@ class ChannelManager(ChannelBus):
             await self._send(msg.channel, msg.chat_id, self.pairing_text(code))
             return
         cfg = self.store.config(msg.channel)
-        if msg.is_group and cfg.group_policy == "mention" and not msg.mentioned:
+        if not self.matrix.allows(
+            DiscretionQuery(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                sender_id=msg.sender_id,
+                is_group=msg.is_group,
+                operation="message",
+                sender_allowed=True,
+                mentioned=msg.mentioned,
+                mention_required=cfg.group_policy == "mention",
+            )
+        ):
+            logger.debug("channel {}: discretion denied a message in {}", msg.channel, key)
             return
         if not msg.is_group:
             self.pairing.touch(
@@ -292,6 +325,17 @@ class ChannelManager(ChannelBus):
         word = text.lower().strip(" .!。！")
         # a word for an approval this chat was asked about
         if self._asks.get(key) and (word in ALLOW_WORDS or word in DENY_WORDS):
+            if msg.is_group:
+                # a group is read-only for approvals: the word is not a decision
+                await self._send(
+                    msg.channel,
+                    msg.chat_id,
+                    self.say(
+                        "Approvals are answered in a direct chat, not here.",
+                        "审批请在私聊里回复，这里只读。",
+                    ),
+                )
+                return
             approval_id = self._asks[key][-1]
             await self._decide(msg.channel, msg.chat_id, approval_id, word in ALLOW_WORDS)
             return
@@ -342,10 +386,36 @@ class ChannelManager(ChannelBus):
         probe = InboundMessage(channel=channel, chat_id=chat_id, sender_id=sender_id)
         if not self._allowed(probe):
             return
+        # an answer from a chat the card was never asked in settles nothing: the
+        # approval id alone is not the authority, the chat it was asked in is
+        origin = self._ask_origins.get(approval_id)
+        if origin is not None and origin != (channel, chat_id):
+            logger.warning(
+                "channel {}: approval {} answered from {}, asked in {}; ignoring",
+                channel,
+                approval_id,
+                (channel, chat_id),
+                origin,
+            )
+            return
+        if not self.matrix.allows(
+            DiscretionQuery(
+                channel=channel,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                is_group=bool(value.get("is_group")),
+                operation="approve",
+                sender_allowed=True,
+                mention_required=False,
+            )
+        ):
+            logger.debug("channel {}: discretion denied an approval from {}", channel, chat_id)
+            return
         await self._decide(channel, chat_id, approval_id, decision == "allow")
 
     async def _decide(self, channel: str, chat_id: str, approval_id: str, approved: bool) -> None:
         key = f"{channel}:{chat_id}"
+        self._ask_origins.pop(approval_id, None)
         label = self.types[channel].label
         ok = self.svc.decide(approval_id, approved, "once", f"from {label}")
         asks = self._asks.get(key)
@@ -602,6 +672,7 @@ class ChannelManager(ChannelBus):
         if ch is None or not approval_id:
             return
         self._asks.setdefault(f"{channel}:{chat_id}", []).append(approval_id)
+        self._ask_origins[approval_id] = (channel, chat_id)
         try:
             await ch.ask(chat_id, approval_id, text)
         except Exception as exc:  # noqa: BLE001
