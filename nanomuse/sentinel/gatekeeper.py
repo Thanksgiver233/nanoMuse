@@ -65,6 +65,38 @@ class GatekeeperError(RuntimeError):
     pass
 
 
+# ------------------------------------------- platform prerequisites (Linux only)
+def _unix_socket_family() -> int:
+    """The Unix domain socket family, or a refusal where it does not exist.
+
+    Resolved through getattr: the attribute is absent from the stubs on
+    platforms without Unix sockets, so naming it directly fails mypy there
+    even though this prototype only ever runs on Linux."""
+
+    family = getattr(socket, "AF_UNIX", None)
+    if family is None:
+        raise GatekeeperUnavailable("Unix domain sockets are unavailable on this platform")
+    return family
+
+
+def _peer_cred_option() -> int:
+    """The socket option that reads a Unix peer's credentials, or a refusal."""
+
+    option = getattr(socket, "SO_PEERCRED", None)
+    if option is None:
+        raise GatekeeperError("SO_PEERCRED is unavailable on this platform")
+    return option
+
+
+def _own_uid() -> int:
+    """This process's user id, or a refusal where the platform has none."""
+
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        raise GatekeeperError("os.getuid is unavailable on this platform")
+    return getuid()
+
+
 # ------------------------------------------------------------------ the key
 def _read_key_from_fd(fd: int) -> bytes:
     chunks: list[bytes] = []
@@ -149,9 +181,9 @@ class GatekeeperServer:
     # ------------------------------------------------------------------ socket
     def _peer_uid(self, conn: socket.socket) -> int:
         try:
-            raw = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
-        except (AttributeError, OSError) as exc:
-            raise GatekeeperError("SO_PEERCRED is unavailable on this platform") from exc
+            raw = conn.getsockopt(socket.SOL_SOCKET, _peer_cred_option(), struct.calcsize("3i"))
+        except OSError as exc:
+            raise GatekeeperError(f"cannot read the peer credential: {exc}") from exc
         _pid, uid, _gid = struct.unpack("3i", raw)
         return uid
 
@@ -159,7 +191,7 @@ class GatekeeperServer:
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
         if self.socket_path.exists():
             self.socket_path.unlink()
-        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server = socket.socket(_unix_socket_family(), socket.SOCK_STREAM)
         try:
             server.bind(str(self.socket_path))
             os.chmod(self.socket_path, 0o600)
@@ -183,7 +215,7 @@ class GatekeeperServer:
                 self.socket_path.unlink()
 
     def _serve_connection(self, conn: socket.socket) -> None:
-        if self._peer_uid(conn) != os.getuid():
+        if self._peer_uid(conn) != _own_uid():
             logger.warning("gatekeeper: refusing a peer from another user")
             return
         conn.settimeout(_SOCKET_TIMEOUT_S)
@@ -297,7 +329,7 @@ class GatekeeperClient:
 
     def _call(self, payload: dict[str, Any]) -> dict[str, Any]:
         line = json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n"
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock = socket.socket(_unix_socket_family(), socket.SOCK_STREAM)
         try:
             sock.settimeout(self.timeout)
             sock.connect(self.socket_path)
