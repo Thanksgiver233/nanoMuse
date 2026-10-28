@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -92,11 +93,11 @@ class OAuthBroker:
         self,
         vault: CredentialVault,
         vendors: dict[str, OAuthVendor],
-        clock: object = time.time,  # noqa: ANN001 - a time.time-shaped callable, for tests
+        clock: Callable[[], float] = time.time,
     ):
         self._vault = vault
         self._vendors = dict(vendors)
-        self._clock = clock  # type: ignore[assignment]
+        self._clock = clock
 
     def __repr__(self) -> str:
         return f"OAuthBroker(providers={sorted(self._vendors)})"
@@ -165,7 +166,12 @@ class OAuthBroker:
         access = self._vault.get(self._access_key(provider))
         if access is None or not meta:
             return ConnectionStatus(provider=provider, connected=False)
-        scopes = tuple(str(s) for s in meta.get("scopes", []) if isinstance(s, str))
+        raw_scopes = meta.get("scopes")
+        scopes = (
+            tuple(str(s) for s in raw_scopes if isinstance(s, str))
+            if isinstance(raw_scopes, list)
+            else ()
+        )
         expires_at = meta.get("expires_at")
         left = None
         if isinstance(expires_at, (int, float)):
