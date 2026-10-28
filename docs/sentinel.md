@@ -116,7 +116,9 @@ Every entry since signing landed carries a hash-chain link (`seq`, `prev`,
 line after the fact is found by `nanomuse audit --verify`. Lines written before
 signing have no hash fields and verify as unsigned. The signing key is never the
 vault key: it is injected, read from the OS keychain, or kept in its own
-`audit.key` file next to the log (mode 600, or the keychain on Windows). The
+`audit.key` file next to the log (mode 600 on POSIX; on Windows the file's
+access list is read instead, since Windows has no mode bits, and a file open
+to a broad group is refused). The
 chain is tamper-evident, not unforgeable: anyone who holds the device and the
 key can re-sign a whole chain, which is why key separation (a gatekeeper
 process of its own) is a later step, not a claim made here.

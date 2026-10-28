@@ -19,6 +19,7 @@ import hmac
 import json
 import os
 import stat
+import sys
 import threading
 from collections import deque
 from dataclasses import dataclass, field
@@ -32,6 +33,159 @@ _ZERO_HASH = "0" * 64
 _AUDIT_KEY_ENV = "NANOMUSE_AUDIT_KEY"
 _KEYRING_SERVICE = "nanoMuse"
 _KEYRING_ACCOUNT = "audit-signing-key"
+
+# Security identifiers no audit key may be open to, in string form. Only the
+# file's owner (and the machine's own accounts, which the DACL walk below
+# leaves alone) may read the key.
+_BROAD_WINDOWS_SIDS = frozenset(
+    {
+        "S-1-1-0",  # Everyone
+        "S-1-5-11",  # Authenticated Users
+        "S-1-5-32-545",  # Users
+        "S-1-5-32-546",  # Guests
+        "S-1-5-7",  # Anonymous
+        "S-1-5-4",  # Interactive
+        "S-1-5-2",  # Network
+        "S-1-5-6",  # Service
+    }
+)
+
+
+def _windows_key_file_is_private(key_file: Path) -> bool:
+    """True when the file's DACL grants nothing to a broad group.
+
+    Windows has no mode bits: a file written 0600 still reports 0666, so the
+    POSIX check cannot run there and every key read was refused. The DACL is
+    read instead, through GetNamedSecurityInfo, and any access-allowed entry
+    naming a broad group refuses the file. A DACL that cannot be read at all
+    fails closed: the caller refuses the key rather than trusting a file it
+    could not check. This runs only on Windows; it is never called on POSIX,
+    where the mode bits say what the DACL would.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.windll.advapi32  # type: ignore[attr-defined]
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    se_file_object = 1
+    dacl_security_information = 0x00000004
+    acl_size_information = 2
+    access_allowed_ace_type = 0
+    access_allowed_callback_ace_type = 9
+
+    class AclSizeInfo(ctypes.Structure):
+        _fields_ = [
+            ("AceCount", wintypes.DWORD),
+            ("AclBytesInUse", wintypes.DWORD),
+            ("AclBytesFree", wintypes.DWORD),
+        ]
+
+    advapi32.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi32.GetSecurityDescriptorDacl.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.BOOL),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.BOOL),
+    ]
+    advapi32.GetSecurityDescriptorDacl.restype = wintypes.BOOL
+    advapi32.GetAclInformation.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    advapi32.GetAclInformation.restype = wintypes.BOOL
+    advapi32.GetAce.argtypes = [
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.GetAce.restype = wintypes.BOOL
+    advapi32.ConvertSidToStringSidW.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.LPWSTR),
+    ]
+    advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+
+    descriptor = ctypes.c_void_p()
+    try:
+        error = advapi32.GetNamedSecurityInfoW(
+            os.fspath(key_file),
+            se_file_object,
+            dacl_security_information,
+            None,
+            None,
+            ctypes.byref(ctypes.c_void_p()),
+            None,
+            ctypes.byref(descriptor),
+        )
+        if error != 0 or not descriptor:
+            return False
+        present = wintypes.BOOL()
+        defaulted = wintypes.BOOL()
+        dacl = ctypes.c_void_p()
+        if not advapi32.GetSecurityDescriptorDacl(
+            descriptor, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted)
+        ):
+            return False
+        if not present or not dacl:
+            return False  # no DACL: everyone may read
+        info = AclSizeInfo()
+        if not advapi32.GetAclInformation(
+            dacl, ctypes.byref(info), ctypes.sizeof(info), acl_size_information
+        ):
+            return False
+        for index in range(info.AceCount):
+            ace = ctypes.c_void_p()
+            if not advapi32.GetAce(dacl, index, ctypes.byref(ace)):
+                return False
+            ace_type = ctypes.cast(ace, ctypes.POINTER(ctypes.c_ubyte)).contents.value
+            if ace_type not in (access_allowed_ace_type, access_allowed_callback_ace_type):
+                continue  # a deny entry grants nothing
+            ace_address = ace.value
+            if ace_address is None:
+                return False
+            sid = ctypes.c_void_p(ace_address + 8)  # ACE header (4) + access mask (4)
+            text_holder = ctypes.pointer(wintypes.LPWSTR())
+            if not advapi32.ConvertSidToStringSidW(sid, text_holder):
+                return False
+            text = text_holder.contents
+            try:
+                sid_string = text.value
+            finally:
+                kernel32.LocalFree(ctypes.cast(text, ctypes.c_void_p))
+            if sid_string in _BROAD_WINDOWS_SIDS:
+                return False
+        return True
+    except Exception:  # noqa: BLE001 - an unreadable DACL fails closed, never open
+        return False
+    finally:
+        if descriptor:
+            kernel32.LocalFree(descriptor)
+
+
+def _key_file_is_private(key_file: Path) -> bool:
+    """True when no account but the owner can read ``key_file``.
+
+    POSIX checks the mode bits, the way the file was written. Windows has no
+    mode bits, so the DACL is read instead (see
+    :func:`_windows_key_file_is_private`)."""
+    platform = sys.platform  # through a name: mypy would otherwise drop the other platform's branch
+    if platform == "win32":
+        return _windows_key_file_is_private(key_file)
+    return stat.S_IMODE(key_file.stat().st_mode) & 0o077 == 0
 
 
 def _truncate(value: Any, limit: int = 500) -> Any:
@@ -140,11 +294,11 @@ class AuditLog:
         key_file = self._key_file()
         if not key_file.exists():
             return None
-        mode = stat.S_IMODE(key_file.stat().st_mode)
-        if mode & 0o077:
+        if not _key_file_is_private(key_file):
             raise PermissionError(
-                f"audit signing key {key_file} is readable by others (mode {mode:03o}); "
-                "tighten it to 0600 or move it to the OS keychain"
+                f"audit signing key {key_file} is readable by others; "
+                "tighten it to 0600 (POSIX) or restrict its access list "
+                "(Windows) or move it to the OS keychain"
             )
         try:
             key = bytes.fromhex(key_file.read_text("utf-8").strip())
