@@ -367,6 +367,42 @@ class Thread:
         return meta
 
 
+def _feed_reason_for_label(label: str) -> str:
+    """The trigger a background run's label names: the label is the delivery's
+    own words (``Check-in: …``, ``Working on your goal: …``), so the mapping is
+    exact, not a guess at the reply's text."""
+    if label.startswith("Check-in: "):
+        return "goal-check-in"
+    if label.startswith("Working on your goal: "):
+        return "goal-pass"
+    if label.startswith(("Reminder: ", "Routine: ")):
+        return "reminder"
+    if label.startswith("Webhook: "):
+        return "event-trigger"
+    if label.startswith("New mail: "):
+        return "new-mail"
+    if label.startswith("Coming up: "):
+        return "coming-up"
+    return "background"
+
+
+def _feed_reason(source: str, label: str) -> str:
+    """The trigger a background run's starting notice records: its source is the
+    delivery kind (``goal``, ``goal_check``, ``reminder``, ``trigger``), and
+    the label settles the rest."""
+    if source == "goal":
+        return "goal-pass"
+    if source == "goal_check":
+        return "goal-check-in"
+    if source == "reminder":
+        return "reminder"
+    if source == "trigger":
+        return "event-trigger"
+    if source == "memory":
+        return "memory-tidy"
+    return _feed_reason_for_label(label)
+
+
 def _parse_when(value: str | None) -> datetime | None:
     """An ISO timestamp from a store → aware datetime (naive ones are local), or None."""
     if not value:
@@ -2613,7 +2649,13 @@ class MuseService:
     # ------------------------------------------------------------------ feed / upcoming
     def feed(self, limit: int = 60) -> list[dict[str, Any]]:
         """What happened without you asking, newest first: one entry per background pass
-        (its final reply, plus any file it made) and every card still waiting for you."""
+        (its final reply, plus any file it made) and every card still waiting for you.
+
+        Each entry says ``reason``: why it interrupted you — the trigger that
+        started the pass (a goal pass, a check-in, a reminder), or that a card
+        is waiting for an answer. The reason comes from the run's own record,
+        never from a guess at the text."""
+
         items: list[dict[str, Any]] = []
         for t in self.threads.values():
             items.extend(self._feed_of(t))
@@ -2623,7 +2665,9 @@ class MuseService:
     def _feed_of(self, t: Thread) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
 
-        def item(ev: dict[str, Any], kind: str, title: str, text: str) -> dict[str, Any]:
+        def item(
+            ev: dict[str, Any], kind: str, title: str, text: str, reason: str = "background"
+        ) -> dict[str, Any]:
             return {
                 "id": ev["id"],
                 "ts": ev["ts"],
@@ -2635,6 +2679,8 @@ class MuseService:
                 "path": ev.get("path"),
                 # a pass that found nothing worth interrupting you for
                 "quiet": bool(ev.get("quiet")),
+                # why this entry interrupted you: the trigger that started the pass
+                "reason": reason,
             }
 
         # A background pass is the notice that starts it followed by everything the agent
@@ -2647,11 +2693,23 @@ class MuseService:
                 return
             last = run["said"][-1] if run["said"] else None
             if last is not None:
-                out.append(item(last, "background", run["label"], last.get("text", "")))
+                out.append(
+                    item(last, "background", run["label"], last.get("text", ""), run["reason"])
+                )
             elif t.busy and run is runs[-1]:
-                out.append(item(run["start"], "background", run["label"], "Working on it…"))
+                out.append(
+                    item(run["start"], "background", run["label"], "Working on it…", run["reason"])
+                )
             for art in run["made"]:
-                out.append(item(art, "artifact", f"Made {art.get('name', 'a file')}", run["label"]))
+                out.append(
+                    item(
+                        art,
+                        "artifact",
+                        f"Made {art.get('name', 'a file')}",
+                        run["label"],
+                        run["reason"],
+                    )
+                )
 
         runs: list[dict[str, Any]] = []
         for ev in t.timeline.events:
@@ -2659,7 +2717,13 @@ class MuseService:
             if kind == "approval":
                 if ev.get("status") == "pending":
                     out.append(
-                        item(ev, "approval", "Waiting for your approval", ev.get("summary", ""))
+                        item(
+                            ev,
+                            "approval",
+                            "Waiting for your approval",
+                            ev.get("summary", ""),
+                            "approval",
+                        )
                     )
                 continue
             if kind == "question":
@@ -2670,12 +2734,19 @@ class MuseService:
                             "question",
                             f"{self.profile.name} has a question",
                             ev.get("text", ""),
+                            "question",
                         )
                     )
                 continue
             if kind == "notice" and src not in (None, "background"):
                 flush()
-                run = {"label": ev.get("text", ""), "start": ev, "said": [], "made": []}
+                run = {
+                    "label": ev.get("text", ""),
+                    "start": ev,
+                    "said": [],
+                    "made": [],
+                    "reason": _feed_reason(str(src), str(ev.get("text", ""))),
+                }
                 runs.append(run)
             elif src == "background":
                 if run is None:
@@ -2684,6 +2755,7 @@ class MuseService:
                         "start": ev,
                         "said": [],
                         "made": [],
+                        "reason": _feed_reason_for_label(str(ev.get("about") or "")),
                     }
                     runs.append(run)
                 if kind == "artifact":
