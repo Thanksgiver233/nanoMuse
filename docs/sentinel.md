@@ -125,6 +125,36 @@ process of its own) is a later step, not a claim made here.
 
 The app's activity sheet (tap the avatar) reads the same file.
 
+## Gatekeeper prototype (Linux, not the default)
+
+`nanomuse/sentinel/gatekeeper.py` is a first step toward the key separation
+the audit section above calls for, and it is a prototype on purpose: it is not
+wired into the running agent, and the in-process Sentinel stays the default.
+
+A supervisor starts the gatekeeper as a child process and hands it the audit
+signing key on a file descriptor; when no key is passed at spawn, the child
+reads it from the OS keychain instead. There is no file fallback: with neither
+available the child refuses to start, and the agent side refuses the call
+rather than running it undecided. The agent side talks to the child over a
+Unix socket the child creates with mode 600; every connection is checked with
+`SO_PEERCRED`, and a peer running as another user gets no answer. The
+gatekeeper holds its own copy of the rules (a snapshot taken at start), the
+persistent grants file, and the signing key. It re-evaluates each call with
+its own rules instead of trusting the advice the agent computed, checks its
+own grants, signs the audit entry, and answers allow, ask or deny. The
+request carries the call's arguments so the rules see them, but the audit
+entry records only their shapes, never their values, and the key never
+crosses the socket in either direction. Unknown requests are refused with a
+reason, and a dead gatekeeper is a refusal, not a silent allow.
+
+The prototype's tests check that its decisions match the in-process policy
+across the same decision matrix, that a grant recorded before a restart is
+still honoured, that a forged audit entry does not verify against its key,
+that starting without a key fails closed, and that the local round trip
+stays under 20ms at the 95th percentile. Wiring it into the agent, reloading
+the rules without a restart, and separating the user the gatekeeper runs as
+are later steps.
+
 ## What this does and does not protect against
 
 Meta Muse runs each user's agent in its own cloud VM with the Sentinel outside it. nanoMuse runs on your machine, as your user, and its Sentinel is a module in the same process. That changes what the safeguards can promise. Honest summary:

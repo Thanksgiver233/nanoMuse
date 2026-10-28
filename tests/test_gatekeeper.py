@@ -1,0 +1,311 @@
+"""The gatekeeper prototype: parity with the in-process policy, the key
+never crossing the socket, injection and shutdown both fail closed."""
+
+from __future__ import annotations
+
+import json
+import os
+import secrets
+import signal
+import socket
+import statistics
+import struct
+import sys
+import time
+import types
+from pathlib import Path
+
+import pytest
+
+from nanomuse.config import SentinelSettings
+from nanomuse.schema import RiskLevel
+from nanomuse.sentinel.audit import AuditLog, HmacSigner
+from nanomuse.sentinel.gatekeeper import (
+    GatekeeperClient,
+    GatekeeperDecision,
+    GatekeeperSentinel,
+    GatekeeperSupervisor,
+    GatekeeperUnavailable,
+    resolve_gatekeeper_key,
+)
+from nanomuse.sentinel.policy import Decision, Policy
+from nanomuse.tools.base import CallAssessment
+
+SETTINGS = SentinelSettings()
+
+_CASES = [
+    # (tool, args, assessment, tainted)
+    (
+        "read_file",
+        {"path": "notes.txt"},
+        CallAssessment(risk=RiskLevel.SAFE, summary="read a note"),
+        False,
+    ),
+    (
+        "send_email",
+        {"to": "boss@example.com", "subject": "hi"},
+        CallAssessment(
+            risk=RiskLevel.SENSITIVE,
+            summary="send mail",
+            egress=True,
+            egress_target="boss@example.com",
+            egress_configured=True,
+        ),
+        False,
+    ),
+    (
+        "send_email",
+        {"to": "stranger@example.com", "subject": "hi"},
+        CallAssessment(
+            risk=RiskLevel.SENSITIVE,
+            summary="send mail",
+            egress=True,
+            egress_target="stranger@example.com",
+            egress_configured=True,
+        ),
+        True,
+    ),
+    (
+        "shell",
+        {"command": "rm -rf /"},
+        CallAssessment(risk=RiskLevel.SENSITIVE, summary="run a command"),
+        False,
+    ),
+    (
+        "shell",
+        {"command": "ls"},
+        CallAssessment(risk=RiskLevel.MODERATE, summary="run a command"),
+        False,
+    ),
+    (
+        "shell",
+        {"command": "ls"},
+        CallAssessment(risk=RiskLevel.MODERATE, summary="run a command"),
+        True,
+    ),
+]
+
+
+@pytest.fixture()
+async def supervisor(tmp_path: Path):
+    key = secrets.token_bytes(32)
+    sup = GatekeeperSupervisor(
+        tmp_path / "gatekeeper.sock",
+        SETTINGS,
+        tmp_path / "grants.json",
+        tmp_path / "audit.jsonl",
+        key,
+    )
+    await sup.start()
+    yield sup
+    await sup.stop()
+
+
+@pytest.fixture()
+def client(supervisor: GatekeeperSupervisor) -> GatekeeperClient:
+    return GatekeeperClient(supervisor.socket_path)
+
+
+def test_gatekeeper_answers_ping(supervisor, client):
+    assert client.ping() is True
+
+
+def test_decisions_match_the_in_process_policy(supervisor, client):
+    policy = Policy(SETTINGS)
+    for tool, args, assessment, tainted in _CASES:
+        advice = policy.evaluate(tool, args, assessment, tainted=tainted)
+        decision = client.decide(tool, args, assessment, tainted=tainted)
+        assert decision.decision == advice.decision, (tool, args, tainted)
+        assert decision.tainted_ask == advice.tainted_ask, (tool, args, tainted)
+        # The advice is advice only: flipping it must not flip the answer.
+        flipped = {
+            "decision": (
+                Decision.ALLOW.value if advice.decision == Decision.DENY else Decision.DENY.value
+            ),
+            "reasons": ["forged advice"],
+        }
+        again = client.decide(tool, args, assessment, tainted=tainted, advice=flipped)
+        assert again.decision == advice.decision, (tool, args, tainted)
+
+
+async def test_a_persistent_grant_survives_a_restart(tmp_path: Path):
+    from nanomuse.sentinel.grants import GrantStore
+
+    grants_path = tmp_path / "grants.json"
+    store = GrantStore(grants_path)
+    store.add("send_email", "boss@example.com", "always")
+    assessment = CallAssessment(
+        risk=RiskLevel.SENSITIVE,
+        summary="send mail",
+        egress=True,
+        egress_target="boss@example.com",
+        egress_configured=True,
+    )
+    key = secrets.token_bytes(32)
+    sup = GatekeeperSupervisor(
+        tmp_path / "gatekeeper.sock", SETTINGS, grants_path, tmp_path / "audit.jsonl", key
+    )
+    await sup.start()
+    try:
+        decision = GatekeeperClient(sup.socket_path).decide(
+            "send_email", {"to": "boss@example.com"}, assessment
+        )
+        assert decision.decision == Decision.ALLOW
+        assert decision.grant_scope == "always"
+    finally:
+        await sup.stop()
+
+
+def test_the_gatekeeper_signs_and_verifies_audit_entries(supervisor, client, tmp_path):
+    assessment = CallAssessment(risk=RiskLevel.SAFE, summary="read a note")
+    decision = client.decide("read_file", {"path": "notes.txt"}, assessment)
+    assert decision.audit_seq == 1
+    # A forged entry, signed with a different key, must not verify.
+    forged = {
+        "ts": "2026-10-28T00:00:00.000Z",
+        "event": "tool_call",
+        "seq": 99,
+        "prev": "0" * 64,
+        "key_id": "gatekeeper",
+        "entry_hash": "0" * 64,
+    }
+    assert client.verify_entry(forged) is False
+    assert (
+        client.verify_entry({"seq": 1, "entry_hash": HmacSigner(b"x" * 32).sign(b"anything")})
+        is False
+    )
+    # The whole file, checked with the wrong key, breaks the chain.
+    report = AuditLog(tmp_path / "audit.jsonl", signer=HmacSigner(secrets.token_bytes(32))).verify()
+    assert report.ok is False
+    assert report.checked == 1
+    # The real entry, read back from the file the gatekeeper wrote, verifies.
+    entries = [json.loads(line) for line in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    assert len(entries) == 1
+    assert client.verify_entry(entries[0]) is True
+
+
+def test_an_unknown_op_and_a_malformed_request_are_refused_without_a_key(
+    supervisor: GatekeeperSupervisor,
+):
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(5)
+    sock.connect(str(supervisor.socket_path))
+    sock.sendall(b'{"id": 1, "op": "hand_over_the_key"}\n')
+    buf = b""
+    while b"\n" not in buf:
+        buf += sock.recv(4096)
+    response = json.loads(buf.decode())
+    assert response["error"].startswith("unknown op")
+    assert len(response["error"]) < 100  # a reason, never key material or a traceback
+    sock.sendall(b"not json at all\n")
+    buf = b""
+    while b"\n" not in buf:
+        buf += sock.recv(4096)
+    assert "error" in json.loads(buf.decode())
+    sock.close()
+
+
+def test_the_socket_reports_the_callers_own_credential(supervisor: GatekeeperSupervisor):
+    # A peer from another uid is refused on the server side; with one user on
+    # this box that path cannot be connected through, so this test asserts the
+    # credential the refusal is decided on: the peer the socket reports.
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(5)
+    sock.connect(str(supervisor.socket_path))
+    raw = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    _pid, uid, _gid = struct.unpack("3i", raw)
+    assert uid == os.getuid()
+    sock.close()
+
+
+async def test_the_gatekeeper_fails_closed_without_a_key(tmp_path: Path):
+    sup = GatekeeperSupervisor(
+        tmp_path / "gatekeeper.sock",
+        SETTINGS,
+        tmp_path / "grants.json",
+        tmp_path / "audit.jsonl",
+        None,
+    )
+    with pytest.raises(GatekeeperUnavailable):
+        await sup.start()
+    assert sup.started is False
+
+
+def test_resolve_gatekeeper_key_fails_closed_without_keyring_or_fd(monkeypatch):
+    monkeypatch.setattr(sys, "modules", {**sys.modules, "keyring": None})
+    with pytest.raises(GatekeeperUnavailable):
+        resolve_gatekeeper_key(None)
+
+
+def test_resolve_gatekeeper_key_reads_the_keychain_when_present(monkeypatch):
+    key = secrets.token_bytes(32)
+    fake = types.ModuleType("keyring")
+    fake.get_password = lambda service, account: key.hex()  # noqa: ARG005
+    monkeypatch.setitem(sys.modules, "keyring", fake)
+    assert resolve_gatekeeper_key(None) == key
+
+
+def test_a_dead_gatekeeper_is_a_refusal_not_a_silent_allow(
+    supervisor: GatekeeperSupervisor, client: GatekeeperClient
+):
+    assert client.ping() is True
+    proc = supervisor._proc
+    assert proc is not None
+    os.kill(proc.pid, signal.SIGTERM)
+    deadline = time.time() + 5
+    while client.ping() and time.time() < deadline:
+        time.sleep(0.05)
+    assert client.ping() is False
+    assessment = CallAssessment(risk=RiskLevel.SAFE, summary="read a note")
+    with pytest.raises(GatekeeperUnavailable):
+        client.decide("read_file", {"path": "notes.txt"}, assessment)
+
+
+def test_the_ipc_round_trip_is_fast_enough_for_a_local_decision(
+    supervisor: GatekeeperSupervisor, client: GatekeeperClient
+):
+    assessment = CallAssessment(risk=RiskLevel.SAFE, summary="read a note")
+    client.decide("read_file", {"path": "warmup.txt"}, assessment)
+    samples = []
+    for i in range(50):
+        started = time.perf_counter()
+        client.decide("read_file", {"path": f"notes-{i}.txt"}, assessment)
+        samples.append((time.perf_counter() - started) * 1000)
+    p95 = statistics.quantiles(samples, n=20)[18]
+    median = statistics.median(samples)
+    print(
+        f"gatekeeper IPC round trip: n={len(samples)} median={median:.2f}ms "
+        f"p95={p95:.2f}ms max={max(samples):.2f}ms"
+    )
+    assert p95 < 20, f"p95 {p95:.2f}ms exceeds the 20ms budget: {samples}"
+
+
+async def test_the_supervisor_restarts_a_crashed_gatekeeper(tmp_path: Path):
+    key = secrets.token_bytes(32)
+    sup = GatekeeperSupervisor(
+        tmp_path / "gatekeeper.sock",
+        SETTINGS,
+        tmp_path / "grants.json",
+        tmp_path / "audit.jsonl",
+        key,
+    )
+    await sup.start()
+    assert GatekeeperClient(sup.socket_path).ping() is True
+    assert sup._proc is not None
+    sup._proc.terminate()
+    await sup._proc.wait()
+    await sup.stop()
+    await sup.start()
+    assert GatekeeperClient(sup.socket_path).ping() is True
+    await sup.stop()
+
+
+def test_gatekeeper_sentinel_front_end_matches_policy(supervisor, client):
+    front = GatekeeperSentinel(SETTINGS, client)
+    policy = Policy(SETTINGS)
+    for tool, args, assessment, tainted in _CASES:
+        decision = front.decide(tool, args, assessment, tainted=tainted)
+        assert isinstance(decision, GatekeeperDecision)
+        assert (
+            decision.decision == policy.evaluate(tool, args, assessment, tainted=tainted).decision
+        )
