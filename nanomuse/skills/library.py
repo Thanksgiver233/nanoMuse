@@ -15,10 +15,22 @@ the ones shipped with nanoMuse (``nanomuse/skills/builtin``) and your own, in
 ``<data_dir>/skills`` — a folder of yours with a built-in's name replaces it. The agent
 can write a skill of its own after a job went well, which asks first: a skill is a
 standing instruction, and planting one is the obvious thing for a hostile web page to try.
+
+Format v1 adds a manifest to the front matter: ``version: 1``, a ``permissions:``
+block (the tools, hosts and workspace paths the skill declares it needs), a
+``tests:`` list naming the tests that cover it, and an optional Ed25519
+``signature`` with its ``signer``. A signed skill whose signature does not verify,
+or whose signer is not trusted, is refused at load with the reason; an unsigned
+skill loads as before and is marked unsigned. The signature covers the name, the
+description, the instructions, the allowed tools, the permissions and the version,
+so any edit after signing is caught.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import re
 import shutil
 import time
@@ -52,6 +64,131 @@ SLASH = re.compile(r"^/([a-z0-9][a-z0-9-]*)(?:\s+|$)")
 
 
 @dataclass
+class SkillPermissions:
+    """What a skill says it needs, in its manifest: the tools it may call, the
+    hosts it may reach, and the workspace paths it may read. A declaration, not
+    an enforcement: the Sentinel still judges every call, and a skill that
+    reaches past what it declared is a skill that lied in its manifest.
+
+    A tool entry may name an MCP server as ``mcp:<server>`` (for example
+    ``mcp:github``): only that server's read operations, as the skill's
+    instructions limit them, never the server's write operations."""
+
+    tools: list[str] = field(default_factory=list)
+    network: list[str] = field(default_factory=list)
+    files: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, list[str]]:
+        return {"tools": list(self.tools), "network": list(self.network), "files": list(self.files)}
+
+    def canonical(self) -> dict[str, list[str]]:
+        return {
+            "tools": sorted(self.tools),
+            "network": sorted(self.network),
+            "files": sorted(self.files),
+        }
+
+
+def _string_list(raw: Any, what: str) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = _yaml_list(raw)
+    if not isinstance(raw, list) or any(not isinstance(x, str) or not x.strip() for x in raw):
+        raise ValueError(f"{what} must be a list of strings")
+    return [str(x).strip() for x in raw]
+
+
+def _validate_permissions(raw: Any, name: str) -> SkillPermissions:
+    """The ``permissions:`` block as parsed, checked for shape. Anything else is
+    a load error with the reason, not a skill that loads half-declared."""
+    if raw is None:
+        return SkillPermissions()
+    if not isinstance(raw, dict):
+        raise ValueError(f"{name}: `permissions` must be a mapping of tools/network/files")
+    tools = _string_list(raw.get("tools"), f"{name}: `permissions.tools`")
+    network = _string_list(raw.get("network"), f"{name}: `permissions.network`")
+    files = _string_list(raw.get("files"), f"{name}: `permissions.files`")
+    for host in network:
+        if "://" in host or "/" in host or any(ch.isspace() for ch in host):
+            raise ValueError(f"{name}: `permissions.network` entry {host!r} is not a host name")
+    for path in files:
+        parts = Path(path).parts
+        if Path(path).is_absolute() or ".." in parts or not path.strip():
+            raise ValueError(
+                f"{name}: `permissions.files` entry {path!r} must stay in the workspace"
+            )
+    return SkillPermissions(tools=tools, network=network, files=files)
+
+
+# ------------------------------------------------------------------ signatures
+def _canonical_payload(
+    name: str,
+    description: str,
+    body: str,
+    allowed_tools: list[str],
+    permissions: SkillPermissions,
+    version: int,
+) -> bytes:
+    """The bytes a signature covers: everything that changes what the skill does."""
+    payload = {
+        "name": name,
+        "description": description,
+        "body": body,
+        "allowed-tools": sorted(allowed_tools),
+        "permissions": permissions.canonical(),
+        "version": version,
+    }
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode(
+        "utf-8"
+    )
+
+
+def sign_skill_payload(
+    private_key: bytes,
+    name: str,
+    description: str,
+    body: str,
+    allowed_tools: list[str],
+    permissions: SkillPermissions,
+    version: int,
+) -> str:
+    """Sign a skill's payload with an Ed25519 private key (32 raw bytes). The key
+    itself never enters the repository: signing happens where the key lives."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    key = Ed25519PrivateKey.from_private_bytes(private_key)
+    payload = _canonical_payload(name, description, body, allowed_tools, permissions, version)
+    return base64.b64encode(key.sign(payload)).decode("ascii")
+
+
+def verify_skill_signature(
+    public_key: bytes,
+    signature: str,
+    name: str,
+    description: str,
+    body: str,
+    allowed_tools: list[str],
+    permissions: SkillPermissions,
+    version: int,
+) -> bool:
+    """True when the signature matches the payload under the public key (32 raw
+    bytes). Any malformed input is False, never an exception: a bad signature is
+    a refused skill, not a crash."""
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    try:
+        raw_sig = base64.b64decode(signature, validate=True)
+        key = Ed25519PublicKey.from_public_bytes(public_key)
+        payload = _canonical_payload(name, description, body, allowed_tools, permissions, version)
+        key.verify(raw_sig, payload)
+    except (ValueError, binascii.Error, InvalidSignature):
+        return False
+    return True
+
+
+@dataclass
 class Skill:
     name: str
     description: str
@@ -64,6 +201,15 @@ class Skill:
     channel: str = ""  # one of CHANNELS, or "" when the skill does not say
     enabled: bool = True
     updated_at: float = 0.0
+    # format v1: the manifest version (0 when the SKILL.md predates it), what the
+    # skill declares it needs, the tests that cover it, and the signature state:
+    # True when a signature was present and verified, None when unsigned
+    version: int = 0
+    permissions: SkillPermissions = field(default_factory=SkillPermissions)
+    tests: list[str] = field(default_factory=list)
+    signer: str = ""
+    signature: str = ""
+    signature_ok: bool | None = None
 
     @property
     def needs_phone(self) -> bool:
@@ -95,6 +241,11 @@ class Skill:
             "allowed_tools": self.allowed_tools,
             "metadata": self.metadata,
             "channel": self.channel,
+            "version": self.version,
+            "permissions": self.permissions.to_dict(),
+            "tests": list(self.tests),
+            "signer": self.signer,
+            "signature_ok": self.signature_ok,
             "updated_at": datetime.fromtimestamp(self.updated_at)
             .astimezone()
             .isoformat(timespec="seconds")
@@ -181,16 +332,45 @@ def parse_front_matter(text: str) -> tuple[dict[str, Any], str]:
             meta[key] = joiner.join(block).strip()
             continue
         if rest == "":
-            # a nested mapping or a "- item" list on the following indented lines
-            nested: dict[str, str] = {}
+            # a nested mapping or a "- item" list on the following indented lines,
+            # one level deeper for a mapping whose value is itself a list
+            # (``permissions:`` with ``tools:`` under it, then ``-`` items)
+            nested: dict[str, Any] = {}
             items: list[str] = []
             i += 1
             while i < end and lines[i].startswith((" ", "\t")):
                 sub = lines[i].strip()
+                indent = len(lines[i]) - len(lines[i].lstrip(" \t"))
                 if sub.startswith("- "):
                     items.append(_yaml_scalar(sub[2:]))
-                elif (sm := re.match(r"^([A-Za-z0-9_-]+)\s*:\s*(.*)$", sub)) is not None:
-                    nested[sm.group(1)] = _yaml_scalar(sm.group(2))
+                    i += 1
+                    continue
+                sm = re.match(r"^([A-Za-z0-9_-]+)\s*:\s*(.*)$", sub)
+                if sm is None:
+                    i += 1
+                    continue
+                sub_key, sub_rest = sm.group(1), sm.group(2).strip()
+                if sub_rest == "":
+                    deeper: list[str] = []
+                    j = i + 1
+                    while j < end and lines[j].startswith((" ", "\t")):
+                        deep = lines[j].strip()
+                        deep_indent = len(lines[j]) - len(lines[j].lstrip(" \t"))
+                        if deep_indent <= indent or not deep.startswith("- "):
+                            break
+                        deeper.append(_yaml_scalar(deep[2:]))
+                        j += 1
+                    if deeper:
+                        nested[sub_key] = deeper
+                        i = j
+                        continue
+                    nested[sub_key] = {}
+                    i += 1
+                    continue
+                if sub_rest.startswith("["):
+                    nested[sub_key] = _yaml_list(sub_rest)
+                else:
+                    nested[sub_key] = _yaml_scalar(sub_rest)
                 i += 1
             meta[key] = items if items else nested
             continue
@@ -225,6 +405,11 @@ def render_skill(
     allowed_tools: list[str] | None = None,
     metadata: dict[str, str] | None = None,
     channel: str = "",
+    version: int = 0,
+    permissions: SkillPermissions | None = None,
+    tests: list[str] | None = None,
+    signer: str = "",
+    signature: str = "",
 ) -> str:
     lines = ["---", f"name: {name}", f"description: {_yaml_quote(description.strip())}"]
     if license:
@@ -233,6 +418,21 @@ def render_skill(
         lines.append("allowed-tools: " + " ".join(allowed_tools))
     if channel:
         lines.append(f"channel: {channel}")
+    if version:
+        lines.append(f"version: {version}")
+    if permissions is not None and (permissions.tools or permissions.network or permissions.files):
+        lines.append("permissions:")
+        for key in ("tools", "network", "files"):
+            values = getattr(permissions, key)
+            if values:
+                lines.append(f"  {key}:")
+                lines += [f"    - {_yaml_quote(v)}" for v in values]
+    if tests:
+        lines.append("tests: [" + ", ".join(_yaml_quote(t) for t in tests) + "]")
+    if signer:
+        lines.append(f"signer: {_yaml_quote(signer)}")
+    if signature:
+        lines.append(f"signature: {signature}")
     if metadata:
         lines.append("metadata:")
         lines += [f"  {k}: {_yaml_quote(str(v))}" for k, v in metadata.items()]
@@ -240,8 +440,15 @@ def render_skill(
     return "\n".join(lines) + "\n\n" + body.strip() + "\n"
 
 
-def load_skill(folder: Path, source: str = YOURS) -> Skill:
-    """The skill in ``folder`` (its ``SKILL.md``); raises ``ValueError`` when it is not one."""
+def load_skill(
+    folder: Path, source: str = YOURS, trusted_keys: dict[str, bytes] | None = None
+) -> Skill:
+    """The skill in ``folder`` (its ``SKILL.md``); raises ``ValueError`` when it is not one.
+
+    A skill that carries a ``signature`` is refused unless the signer is in
+    ``trusted_keys`` and the signature verifies over the payload: a signature
+    that does not check out is a load error with the reason, and the skill never
+    reaches the library. Unsigned skills load as before, marked unsigned."""
     file = folder / "SKILL.md"
     if not file.is_file():
         raise ValueError(f"{folder.name}: no SKILL.md")
@@ -265,6 +472,39 @@ def load_skill(folder: Path, source: str = YOURS) -> Skill:
         tools = _yaml_list(tools)
     raw_meta = meta.get("metadata")
     metadata = {str(k): str(v) for k, v in raw_meta.items()} if isinstance(raw_meta, dict) else {}
+    version_raw = meta.get("version", 0)
+    try:
+        version = int(str(version_raw).strip())
+    except ValueError:
+        raise ValueError(f"{name}: `version` must be a number") from None
+    if version < 0:
+        raise ValueError(f"{name}: `version` must not be negative")
+    permissions = _validate_permissions(meta.get("permissions"), name)
+    tests = _string_list(meta.get("tests"), f"{name}: `tests`")
+    signer = str(meta.get("signer") or "").strip()
+    signature = str(meta.get("signature") or "").strip()
+    signature_ok: bool | None = None
+    if signature:
+        if not signer:
+            raise ValueError(f"{name}: a `signature` without a `signer` cannot be verified")
+        keys = trusted_keys or {}
+        if signer not in keys:
+            raise ValueError(
+                f"{name}: signer {signer!r} is not trusted, so the signed skill is refused"
+            )
+        allowed = [str(t) for t in tools]
+        if not verify_skill_signature(
+            keys[signer],
+            signature,
+            name,
+            description,
+            body.strip(),
+            allowed,
+            permissions,
+            version,
+        ):
+            raise ValueError(f"{name}: the signature does not match the skill, so it is refused")
+        signature_ok = True
     return Skill(
         name=name,
         description=description[:1024],
@@ -276,6 +516,12 @@ def load_skill(folder: Path, source: str = YOURS) -> Skill:
         metadata=metadata,
         channel=normalise_channel(meta.get("channel") or metadata.get("channel")),
         updated_at=file.stat().st_mtime,
+        version=version,
+        permissions=permissions,
+        tests=tests,
+        signer=signer,
+        signature=signature,
+        signature_ok=signature_ok,
     )
 
 
@@ -292,10 +538,19 @@ def normalise_channel(value: Any) -> str:
 class SkillLibrary:
     """Every skill available: the built-in ones and yours, yours winning on a name clash."""
 
-    def __init__(self, settings: SkillsSettings, own_dir: Path, builtin_dir: Path = BUILTIN_DIR):
+    def __init__(
+        self,
+        settings: SkillsSettings,
+        own_dir: Path,
+        builtin_dir: Path = BUILTIN_DIR,
+        trusted_keys: dict[str, bytes] | None = None,
+    ):
         self.settings = settings
         self.own_dir = own_dir
         self.builtin_dir = builtin_dir
+        # signer name -> Ed25519 public key (32 raw bytes); a signed skill whose
+        # signer is not here is refused at load
+        self.trusted_keys = dict(trusted_keys or {})
         self._skills: dict[str, Skill] = {}
         self.errors: dict[str, str] = {}
         self._loaded = 0.0
@@ -312,7 +567,7 @@ class SkillLibrary:
                 if not folder.is_dir() or folder.name.startswith((".", "_")):
                     continue
                 try:
-                    skill = load_skill(folder, source)
+                    skill = load_skill(folder, source, self.trusted_keys)
                 except (ValueError, OSError) as exc:
                     errors[folder.name] = str(exc)
                     logger.warning("skill {} skipped: {}", folder.name, exc)
@@ -388,6 +643,11 @@ class SkillLibrary:
         license: str = "",
         allowed_tools: list[str] | None = None,
         metadata: dict[str, str] | None = None,
+        version: int = 0,
+        permissions: SkillPermissions | None = None,
+        tests: list[str] | None = None,
+        signer: str = "",
+        signature: str = "",
     ) -> Skill:
         """Write (or rewrite) one of your skills. A built-in of the same name is replaced
         by it from then on; its folder is left alone."""
@@ -408,6 +668,11 @@ class SkillLibrary:
             license=license,
             allowed_tools=allowed_tools or [],
             metadata=metadata or {},
+            version=version,
+            permissions=permissions,
+            tests=tests,
+            signer=signer,
+            signature=signature,
         )
         if len(text.encode()) > MAX_SKILL_BYTES:
             raise ValueError(f"a SKILL.md is at most {MAX_SKILL_BYTES // 1024} KB")
@@ -419,7 +684,9 @@ class SkillLibrary:
         return skill
 
     def save_text(self, text: str, name: str = "") -> Skill:
-        """Write a skill from the text of a SKILL.md (pasted, uploaded, fetched)."""
+        """Write a skill from the text of a SKILL.md (pasted, uploaded, fetched).
+        The v1 manifest rides along: permissions, tests and a signature survive
+        the round trip, so a signed skill stays signed and verifiable."""
         meta, body = parse_front_matter(text)
         skill_name = str(meta.get("name") or name).strip().lower()
         if not skill_name:
@@ -428,6 +695,10 @@ class SkillLibrary:
         if isinstance(tools, str):
             tools = _yaml_list(tools)
         raw_meta = meta.get("metadata")
+        try:
+            version = int(str(meta.get("version", 0)).strip())
+        except ValueError:
+            raise ValueError("the SKILL.md `version` must be a number") from None
         return self.save(
             skill_name,
             str(meta.get("description") or ""),
@@ -437,6 +708,11 @@ class SkillLibrary:
             metadata={str(k): str(v) for k, v in raw_meta.items()}
             if isinstance(raw_meta, dict)
             else {},
+            version=version,
+            permissions=_validate_permissions(meta.get("permissions"), skill_name),
+            tests=_string_list(meta.get("tests"), "the SKILL.md `tests`"),
+            signer=str(meta.get("signer") or "").strip(),
+            signature=str(meta.get("signature") or "").strip(),
         )
 
     def remove(self, name: str) -> bool:
@@ -525,10 +801,13 @@ __all__ = [
     "YOURS",
     "Skill",
     "SkillLibrary",
+    "SkillPermissions",
     "fetch_skill_text",
     "load_skill",
     "normalise_channel",
     "parse_front_matter",
     "raw_skill_url",
     "render_skill",
+    "sign_skill_payload",
+    "verify_skill_signature",
 ]
