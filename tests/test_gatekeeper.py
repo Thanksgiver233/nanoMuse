@@ -19,13 +19,19 @@ import pytest
 
 from nanomuse.config import SentinelSettings
 from nanomuse.schema import RiskLevel
+from nanomuse.sentinel import gatekeeper
 from nanomuse.sentinel.audit import AuditLog, HmacSigner
 from nanomuse.sentinel.gatekeeper import (
     GatekeeperClient,
     GatekeeperDecision,
+    GatekeeperError,
     GatekeeperSentinel,
+    GatekeeperServer,
     GatekeeperSupervisor,
     GatekeeperUnavailable,
+    _own_uid,
+    _peer_cred_option,
+    _unix_socket_family,
     resolve_gatekeeper_key,
 )
 from nanomuse.sentinel.policy import Decision, Policy
@@ -309,3 +315,48 @@ def test_gatekeeper_sentinel_front_end_matches_policy(supervisor, client):
         assert (
             decision.decision == policy.evaluate(tool, args, assessment, tainted=tainted).decision
         )
+
+
+def test_the_platform_helpers_find_the_linux_apis():
+    assert _unix_socket_family() == socket.AF_UNIX
+    assert _peer_cred_option() == socket.SO_PEERCRED
+    assert _own_uid() == os.getuid()
+
+
+def test_the_platform_helpers_refuse_where_the_apis_do_not_exist(monkeypatch):
+    monkeypatch.delattr(socket, "AF_UNIX", raising=False)
+    with pytest.raises(GatekeeperUnavailable, match="Unix domain sockets"):
+        _unix_socket_family()
+    monkeypatch.delattr(socket, "SO_PEERCRED", raising=False)
+    with pytest.raises(GatekeeperError, match="SO_PEERCRED"):
+        _peer_cred_option()
+    monkeypatch.delattr(os, "getuid", raising=False)
+    with pytest.raises(GatekeeperError, match="getuid"):
+        _own_uid()
+
+
+def test_the_peer_credential_check_refuses_without_so_peercred(tmp_path: Path, monkeypatch):
+    server = GatekeeperServer(
+        tmp_path / "g.sock",
+        SETTINGS,
+        tmp_path / "grants.json",
+        tmp_path / "audit.jsonl",
+        secrets.token_bytes(32),
+    )
+    one, other = socket.socketpair()
+    try:
+        monkeypatch.delattr(socket, "SO_PEERCRED", raising=False)
+        with pytest.raises(GatekeeperError, match="SO_PEERCRED"):
+            server._peer_uid(one)
+    finally:
+        one.close()
+        other.close()
+
+
+def test_the_client_fails_closed_without_unix_sockets(tmp_path: Path, monkeypatch):
+    def _no_unix_family() -> int:
+        raise GatekeeperUnavailable("Unix domain sockets are unavailable on this platform")
+
+    monkeypatch.setattr(gatekeeper, "_unix_socket_family", _no_unix_family)
+    with pytest.raises(GatekeeperUnavailable, match="Unix domain sockets"):
+        GatekeeperClient(tmp_path / "g.sock")._call({"id": "ping", "op": "ping"})
