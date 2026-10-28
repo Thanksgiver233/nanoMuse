@@ -27,7 +27,7 @@ from nanomuse.phone.operator import (
 )
 from nanomuse.phone.screen import image_size
 from nanomuse.phone.trace import list_traces, read_trace, render_html
-from nanomuse.schema import LLMResponse, RiskLevel
+from nanomuse.schema import LLMResponse, RiskLevel, ToolResult
 from nanomuse.sentinel import AuditLog, Sentinel
 from nanomuse.sentinel.audit import channel_of
 from nanomuse.server import create_app
@@ -1137,3 +1137,56 @@ def test_gui_switch_and_device_handshake(settings: Settings):
         assert client.put("/api/connections/gui", json={"model": ["a"]}).status_code == 422
         assert client.put("/api/connections/gui", json={"enabled": "maybe"}).status_code == 422
         assert client.get("/api/connections").json()["gui"]["enabled"] is False
+
+
+async def test_operator_stops_when_vision_is_lost_mid_task(settings: Settings):
+    """The endpoint refuses a picture mid-task: the blind step must never run."""
+    link = PhoneLink(shots_dir=settings.agent.workspace / "screenshots")
+    phone = FakePhone(link, [HOME_SCREEN])
+    ui = AutoApproveUI(approve=True)
+    llm = MockLLM([])
+
+    def go_blind(_messages: list) -> LLMResponse:
+        llm.vision_available = False
+        return labelled("Tap it", "click", coordinate=[499, 499])
+
+    llm.script.append(go_blind)
+    llm.script.append(labelled("Report", "answer", text="done"))
+    operator, _ = make_operator(settings, link, llm, ui, max_steps=4)
+    outcome = await operator.run("tap the button")
+    assert outcome.status == "failed"
+    assert "stopped taking images" in outcome.message
+    assert phone.acts == []
+
+
+async def test_operator_hands_over_after_two_failed_steps(settings: Settings, monkeypatch):
+    """Two failed device steps stop the run, step down the ladder once, and hand over."""
+    link = PhoneLink(shots_dir=settings.agent.workspace / "screenshots")
+    FakePhone(link, [HOME_SCREEN])
+    ui = AutoApproveUI(approve=True)
+    llm = MockLLM(
+        [
+            labelled("Tap it", "click", coordinate=[499, 499]),
+            labelled("Tap it again", "click", coordinate=[499, 499]),
+            labelled("Report", "answer", text="done"),
+        ]
+    )
+    operator, _ = make_operator(settings, link, llm, ui, max_steps=6)
+
+    async def failing_act(params, outcome):
+        return ToolResult.fail("the device did nothing")
+
+    monkeypatch.setattr(operator, "_act", failing_act)
+    outcome = await operator.run("tap the button")
+    assert outcome.status == "blocked"
+    assert "2 failed steps" in outcome.message
+    assert operator.last_ladder is not None
+    assert [(d.from_rung, d.to_rung) for d in operator.last_ladder.decisions] == [
+        ("screen", "browser")
+    ]
+    records = read_trace(settings.data_dir / "phone-traces" / f"{outcome.trace_id}.jsonl")
+    degrades = [r for r in records if r["kind"] == "degrade"]
+    assert len(degrades) == 1
+    assert degrades[0]["step"] == 1
+    assert degrades[0]["from"] == "screen" and degrades[0]["to"] == "browser"
+    assert degrades[0]["reason"] == "the device did nothing"

@@ -41,6 +41,7 @@ from nanomuse.config import GUISettings
 from nanomuse.llm import session as llm_session
 from nanomuse.llm.base import BaseLLM
 from nanomuse.logger import logger
+from nanomuse.phone.degrade import DegradationLadder
 from nanomuse.phone.link import STOP_MARKER, DeviceError, DeviceGone, DeviceStopped, PhoneLink
 from nanomuse.phone.screen import Screen
 from nanomuse.phone.trace import Trace
@@ -712,6 +713,8 @@ class PhoneOperator:
         # (phone_task passes the language of the agent's `step`, written in the user's language)
         self._run_language: str | None = None
         self.traces_dir = traces_dir
+        # the degradation ladder of the run in progress, for the trace and tests
+        self.last_ladder: DegradationLadder | None = None
         # how many times a reply that is not a step is asked again before giving up
         self.parse_retries = 3
         # the holds registry (docs/browser.md): the loop pauses while the user has the device
@@ -860,6 +863,10 @@ class PhoneOperator:
             return
 
         refusals = 0
+        # failed device steps in a row: two is the handover point (Phase 2)
+        failures = 0
+        ladder = DegradationLadder()
+        self.last_ladder = ladder
         # steps in a row that moved nothing on the screen (an unknown function, an action the
         # dialect refused, the same action again): each costs a model call and acts on
         # nothing, and with no step cap a run nobody watches would go on until Stop
@@ -899,6 +906,17 @@ class PhoneOperator:
                 outcome.last_image = screen.image_path
 
             step, raw, latency_ms = await self._decide(instruction, steps, screen)
+            if self.llm.vision_available is False:
+                # The model stopped taking images mid-task (the endpoint
+                # refused a picture and the client fell back to text only):
+                # a step decided without seeing the screen must never run.
+                outcome.status = "failed"
+                outcome.message = (
+                    "the operator model stopped taking images during the task; "
+                    "stopped instead of acting without seeing the screen"
+                )
+                trace.step(step_no, screen, raw=raw, latency_ms=latency_ms, error=outcome.message)
+                break
             if step is None:
                 outcome.status = "failed"
                 outcome.message = "the operator model did not produce usable actions"
@@ -1018,9 +1036,23 @@ class PhoneOperator:
                     outcome.message = result.error
                     break
             elif result.error:
+                failures += 1
                 steps.append(f"{entry}; Result: {result.error[:200]}")
+                if failures == 1:
+                    nxt = ladder.advance(step_no, result.error)
+                    if nxt is not None:
+                        trace.degrade(step_no, ladder.decisions[-1].from_rung, nxt, result.error)
+                        steps.append(f"Note: degraded to the {nxt} rung after the failed step")
+                if failures >= 2:
+                    outcome.status = "blocked"
+                    outcome.message = (
+                        "stopped after 2 failed steps and handed over to the user: "
+                        f"{result.error[:200]}"
+                    )
+                    break
             else:
                 refusals = 0
+                failures = 0
                 steps.append(entry)
 
             try:
