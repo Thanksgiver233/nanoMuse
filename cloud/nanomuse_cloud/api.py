@@ -526,29 +526,40 @@ def create_app(
         swept_at: float | None = None
         repaired_at: float | None = None
         optimized_at: float | None = None
+
+        # A backfill pauses after each page for as long as the page took (half a second at
+        # least): its reads and rewrites of rows that carry whole conversations get at most
+        # half of the disk, and the pages people open keep their share.
+        def pause(started: float, n: int) -> float:
+            return max(0.5, time.monotonic() - started) if n else 60.0
+
         while True:
             try:
                 if not analytics.backfill_done:
+                    t0 = time.monotonic()
                     n = await asyncio.to_thread(analytics.backfill_step, 200)
                     if n and analytics.backfill_rows % 20000 < 200:
                         log.info("analytics: %d kept turns described so far", analytics.backfill_rows)
-                    await asyncio.sleep(0.5 if n else 60)
+                    await asyncio.sleep(pause(t0, n))
                     continue
                 if not analytics.tokens_done:
                     # 0.30: the tokens of older kept turns copied beside their shape, a page at a
                     # time (each page reads its turns' rows, so it is paced like the backfill)
+                    t0 = time.monotonic()
                     n = await asyncio.to_thread(analytics.tokens_step, 200)
                     if n and analytics.tokens_rows % 20000 < 200:
                         log.info("analytics: tokens of %d kept turns copied so far", analytics.tokens_rows)
-                    await asyncio.sleep(0.5 if n else 60)
+                    await asyncio.sleep(pause(t0, n))
                     continue
                 if not analytics.keys_done:
                     # 0.31: the rows kept before the relay told a question from the calls it
                     # took get their turn keys, oldest first, a page of each table at a time
-                    n = await asyncio.to_thread(analytics.turn_keys_step, 500)
-                    if n and analytics.keys_rows % 20000 < 1000:
+                    # (the record's pages are smaller still: Analytics.RECORD_KEYS_PAGE)
+                    t0 = time.monotonic()
+                    n = await asyncio.to_thread(analytics.turn_keys_step, 250)
+                    if n and (analytics.keys_rows - n) // 20000 != analytics.keys_rows // 20000:
                         log.info("analytics: %d kept calls assigned to their turns so far", analytics.keys_rows)
-                    await asyncio.sleep(0.5 if n else 60)
+                    await asyncio.sleep(pause(t0, n))
                     continue
                 if optimized_at is None or time.monotonic() - optimized_at > 3600:
                     # the planner's statistics (Database.optimize): milliseconds, once an hour
@@ -2248,7 +2259,7 @@ def create_app(
         the backfill has not yet assigned to a turn."""
         return with_places(
             await asyncio.to_thread(
-                lambda: cloud.admin_turn_groups(
+                lambda: cloud.reads.admin_turn_groups(
                     since,
                     max(1, min(limit, 100)),
                     before,
@@ -2282,7 +2293,7 @@ def create_app(
     async def admin_turn_one(turn_id: str) -> dict:
         """One call of the record in full: the whole request as the model saw it (the system
         prompt, every message, the tools offered) and the answer."""
-        found = await asyncio.to_thread(cloud.admin_turn, turn_id[:96])
+        found = await asyncio.to_thread(cloud.reads.admin_turn, turn_id[:96])
         if found is None:
             raise CloudError(404, "not_found", "No such turn")
         return with_places({"turn": found})

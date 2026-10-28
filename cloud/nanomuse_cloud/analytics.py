@@ -1484,6 +1484,9 @@ class Analytics:
             self.tokens_done = True
         return len(rows)
 
+    #: the most rows of the record one turn-key step reads and rewrites (turn_keys_step)
+    RECORD_KEYS_PAGE = 100
+
     def turn_keys_step(self, batch: int = 500) -> int:
         """0.31: tell the turns of the record and of the training view from their calls, for
         the rows kept before the relay did (``turn_start`` -1): the next ``batch`` rows of
@@ -1491,14 +1494,17 @@ class Analytics:
         the openers must be keyed before the rows after them. Returns how many rows were
         read, 0 when both tables are through. The cursors live in the settings table like
         the other backfills'. Each page reads its rows' messages on the read-only
-        connection; the update is the small write."""
+        connection; the update is the small write — small in rows: the record's rows are
+        rewritten body and all (``Database.set_turn_keys``), so its pages are at most
+        ``RECORD_KEYS_PAGE`` rows, some ten megabytes read and written per step."""
         if self.keys_done:
             return 0
         read = 0
         through = True  # both tables' pages short: nothing left after this pass
         after_ts, after_rowid, done = self._cursor("turns.keys_cursor")
         if not done:
-            rows = self.db.turns_unkeyed_page(after_ts, after_rowid, batch)
+            page = min(batch, self.RECORD_KEYS_PAGE)
+            rows = self.db.turns_unkeyed_page(after_ts, after_rowid, page)
             if rows:
                 self.store.set_turn_keys(
                     "turns",
@@ -1518,7 +1524,7 @@ class Analytics:
                 last = rows[-1]
                 self.store.settings_put("turns.keys_cursor", [int(last["ts"]), int(last["rowid"])])
                 read += len(rows)
-            if len(rows) < batch:
+            if len(rows) < page:
                 self.store.settings_put("turns.keys_cursor", [-1, -1])
             else:
                 through = False

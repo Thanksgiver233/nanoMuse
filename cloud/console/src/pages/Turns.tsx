@@ -304,6 +304,13 @@ export function Turns({ days }: PageProps) {
   useEffect(() => {
     setRoute({ account: dAccount || null, model: dModel || null, script: dScript || null }, true);
   }, [dAccount, dModel, dScript, setRoute]);
+  // An account set from outside while the page is open (the account drawer's link): the box
+  // follows the hash. A change the box itself made arrives with the debounced value and is
+  // left alone, so typing is never overwritten.
+  useEffect(() => {
+    if (f.account_id !== dAccount) setAccount(f.account_id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [f.account_id]);
   const since = useMemo(() => nowS() - days * 86400, [days]);
   const query = qs({ since, limit: PAGE, account_id: f.account_id, platform: f.platform, run: f.run, source: f.source, model: f.model, script: f.script, media: f.media ? 1 : undefined, hands: f.hands ? 1 : undefined });
   const list = useTurnPages(query);

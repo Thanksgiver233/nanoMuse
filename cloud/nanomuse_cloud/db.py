@@ -420,6 +420,11 @@ BUSY_TIMEOUT_S = 5.0
 # How many entries of each index `PRAGMA optimize` may read for its statistics (see optimize()).
 ANALYSIS_LIMIT = 1000
 
+# How many rows the turn-key backfill writes per transaction (set_turn_keys): a turn's row is
+# rewritten whole, some hundred kilobytes with its request, so this many is a few megabytes
+# and the lock is held for a moment, not for a page.
+KEY_ROWS_PER_TX = 25
+
 # The per-account figures the invite views join in, requests made and money spent, in one
 # pass over the ledger (the same set of kinds as admin_accounts counts). For every account at
 # once (the ranking); a view of one inviter's people uses USAGE_OF_ACCOUNT instead, a lookup
@@ -676,6 +681,18 @@ class Database:
         self._conn.execute("CREATE INDEX IF NOT EXISTS turns_key ON turns(turn_key) WHERE turn_key<>''")
         self._conn.execute("CREATE INDEX IF NOT EXISTS sample_stats_key ON sample_stats(turn_key) WHERE turn_key<>''")
         self._conn.execute("CREATE INDEX IF NOT EXISTS sample_stats_conversation ON sample_stats(account_id, conversation, ts)")
+        # 0.31: the record's figures beside its rows, never through them. A turn's row carries
+        # its request (tens to hundreds of kilobytes), and the columns the figures sum —
+        # `media`, the tokens, `turn_start` — come after it, so reading one of them walks
+        # the body's overflow pages: a sum over a week of turns read gigabytes (half a
+        # minute on a 30 GB file, more with the cache cold). This index holds what the
+        # figures and the question-by-question view read and filter on, a few hundred
+        # bytes a row; their queries name it (INDEXED BY) so the planner never trades it
+        # for the key or account index and a look-up per row.
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS turns_figures ON turns(ts, account_id, turn_start, turn_key, media, media_bytes, "
+            "source, status, prompt_tokens, completion_tokens, trajectory, conversation, script, platform, run, model)"
+        )
 
     # -- 0.15: settings the operator changes while the relay runs ------------------------------
 
@@ -1354,11 +1371,14 @@ class Database:
             return self._conn.execute(q, args).fetchall()
 
     def client_events_for_turns(self, turn_ids: list[str]) -> list[sqlite3.Row]:
+        """The events the apps reported about the turns named (``turn_id<>''`` is the partial
+        index's own term, client_events_turn; see turns_of)."""
         if not turn_ids:
             return []
         with self._lock:
             return self._conn.execute(
-                f"SELECT * FROM client_events WHERE turn_id IN ({','.join('?' * len(turn_ids))}) ORDER BY id", turn_ids
+                f"SELECT * FROM client_events WHERE turn_id<>'' AND turn_id IN ({','.join('?' * len(turn_ids))}) ORDER BY id",
+                turn_ids,
             ).fetchall()
 
     def client_events_summary(self, since: int, day_offset_s: int = 0) -> list[sqlite3.Row]:
@@ -1496,34 +1516,38 @@ class Database:
     def set_turn_keys(self, table: str, rows: list[dict[str, Any]]) -> int:
         """``turn_start`` and ``turn_key`` written to rows the backfill described: each row is
         ``{rowid, account_id, conversation, turn_no, ts, start, id}``; the key of one that
-        continues a turn is looked up as it is written, so a page's openers key the rows
-        after them in the same transaction."""
+        continues a turn is looked up as it is written, after the rows before it, so a
+        page's openers key the rows after them. The page goes in transactions of
+        ``KEY_ROWS_PER_TX``: an update rewrites the row whole, body and all (a turn's row
+        carries its request), and one transaction over a page held the lock every request
+        takes for seconds."""
         if table not in ("turns", "sample_stats"):
             raise ValueError(table)
         n = 0
-        with self.tx() as c:
-            for r in rows:
-                start = bool(r["start"])
-                key = (
-                    str(r["id"])
-                    if start
-                    else self._turn_key_for(
-                        c,
-                        table,
-                        str(r["account_id"]),
-                        str(r.get("conversation") or ""),
-                        int(r.get("turn_no") or 0),
-                        int(r["ts"]),
-                        int(r["rowid"]),
+        for i in range(0, len(rows), KEY_ROWS_PER_TX):
+            with self.tx() as c:
+                for r in rows[i : i + KEY_ROWS_PER_TX]:
+                    start = bool(r["start"])
+                    key = (
+                        str(r["id"])
+                        if start
+                        else self._turn_key_for(
+                            c,
+                            table,
+                            str(r["account_id"]),
+                            str(r.get("conversation") or ""),
+                            int(r.get("turn_no") or 0),
+                            int(r["ts"]),
+                            int(r["rowid"]),
+                        )
                     )
-                )
-                sets = "turn_start=?, turn_key=?"
-                args: list[Any] = [1 if start else 0, key]
-                if table == "sample_stats" and "conversation" in r:
-                    sets += ", conversation=?, turn_no=?"
-                    args.extend([str(r.get("conversation") or "")[:80], int(r.get("turn_no") or 0)])
-                args.append(int(r["rowid"]))
-                n += c.execute(f"UPDATE {table} SET {sets} WHERE rowid=?", args).rowcount
+                    sets = "turn_start=?, turn_key=?"
+                    args: list[Any] = [1 if start else 0, key]
+                    if table == "sample_stats" and "conversation" in r:
+                        sets += ", conversation=?, turn_no=?"
+                        args.extend([str(r.get("conversation") or "")[:80], int(r.get("turn_no") or 0)])
+                    args.append(int(r["rowid"]))
+                    n += c.execute(f"UPDATE {table} SET {sets} WHERE rowid=?", args).rowcount
         return n
 
     def sample_stats_unkeyed_page(self, after_ts: int, after_rowid: int, limit: int) -> list[sqlite3.Row]:
@@ -1594,7 +1618,7 @@ class Database:
             "SELECT turn_key, COUNT(*) AS n, MIN(ts) AS ts0, MAX(ts) AS ts1, MIN(account_id) AS account_id, "
             "SUM(prompt_tokens) AS prompt_tokens, SUM(completion_tokens) AS completion_tokens, SUM(media) AS media, "
             "SUM(CASE WHEN trajectory<>'' THEN 1 ELSE 0 END) AS hands, SUM(CASE WHEN status='partial' THEN 1 ELSE 0 END) AS partial "
-            f"FROM turns WHERE {' AND '.join(where)} GROUP BY turn_key"
+            f"FROM turns INDEXED BY turns_figures WHERE {' AND '.join(where)} GROUP BY turn_key"
         )
         if having:
             q += " HAVING " + " AND ".join(having)
@@ -1604,17 +1628,20 @@ class Database:
             return self._conn.execute(q, args).fetchall()
 
     def turns_of(self, keys: list[str]) -> list[sqlite3.Row]:
-        """Every call of the turns named, oldest first, so the caller can lay each turn out."""
+        """Every call of the turns named, oldest first, so the caller can lay each turn out.
+        ``turn_key<>''`` repeats the partial index's own term (turns_key): a partial index
+        serves a query only when its WHERE says what the index's does, and ``IN`` alone does
+        not — without it, this was a scan of the record, every body read."""
         if not keys:
             return []
         with self._lock:
             return self._conn.execute(
-                f"SELECT * FROM turns WHERE turn_key IN ({','.join('?' * len(keys))}) ORDER BY ts, rowid", keys
+                f"SELECT * FROM turns WHERE turn_key<>'' AND turn_key IN ({','.join('?' * len(keys))}) ORDER BY ts, rowid", keys
             ).fetchall()
 
     def calls_per_turn(self, since: int = 0, account_id: str | None = None) -> list[tuple[int, int]]:
         """How many turns took how many calls, since ``since``: ``(calls, turns)`` pairs."""
-        q = "SELECT n, COUNT(*) AS turns FROM (SELECT COUNT(*) AS n FROM turns WHERE turn_key<>'' AND ts>=?"
+        q = "SELECT n, COUNT(*) AS turns FROM (SELECT COUNT(*) AS n FROM turns INDEXED BY turns_figures WHERE turn_key<>'' AND ts>=?"
         args: list[Any] = [since]
         if account_id is not None:
             q += " AND account_id=?"
@@ -1632,7 +1659,7 @@ class Database:
             "SUM(CASE WHEN turn_start<0 THEN 1 ELSE 0 END) AS pending, "
             "COUNT(DISTINCT CASE WHEN media>0 AND turn_key<>'' THEN turn_key END) AS with_media, "
             "COUNT(DISTINCT CASE WHEN trajectory<>'' AND turn_key<>'' THEN turn_key END) AS with_hands "
-            "FROM turns WHERE ts>=?"
+            "FROM turns INDEXED BY turns_figures WHERE ts>=?"
         )
         args: list[Any] = [since]
         if account_id is not None:
@@ -1722,7 +1749,8 @@ class Database:
             "SELECT COUNT(*) AS n, COUNT(DISTINCT account_id) AS accounts, SUM(prompt_tokens) AS prompt_tokens, "
             "SUM(completion_tokens) AS completion_tokens, SUM(media) AS media, SUM(media_bytes) AS media_bytes, "
             "SUM(CASE WHEN source='own' THEN 1 ELSE 0 END) AS own, "
-            f"SUM(CASE WHEN status='partial' THEN 1 ELSE 0 END) AS partial, {self._TURNS} FROM turns WHERE ts>=?"
+            f"SUM(CASE WHEN status='partial' THEN 1 ELSE 0 END) AS partial, {self._TURNS} "
+            "FROM turns INDEXED BY turns_figures WHERE ts>=?"
         )
         args: list = [since]
         if account_id is not None:
@@ -1748,7 +1776,7 @@ class Database:
             return self._conn.execute(
                 f"""SELECT {self._DAY} AS day, COUNT(*) AS n, COUNT(DISTINCT account_id) AS accounts,
                            SUM(media) AS media, SUM(media_bytes) AS media_bytes, {self._TURNS}
-                    FROM turns WHERE ts>=? GROUP BY day ORDER BY day""",
+                    FROM turns INDEXED BY turns_figures WHERE ts>=? GROUP BY day ORDER BY day""",
                 (offset_s, offset_s, offset_s, since),
             ).fetchall()
 

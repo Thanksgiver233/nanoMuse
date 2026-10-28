@@ -320,6 +320,38 @@ def test_backend_choice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         tool3._pick_backend()
 
 
+async def test_an_embedding_can_supply_the_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A program embedding the runtime with a browser of its own hands the tool a factory: a
+    new session takes that backend instead of Playwright or the phone, the app is told the
+    backend's own kind once it runs, and cleanup closes it like the built-in ones. A running
+    backend is kept across actions; the factory is asked again only after it was closed."""
+    import nanomuse.tools.browser as mod
+
+    monkeypatch.setattr(mod, "playwright_available", lambda: True)
+    made: list[FakeBackend] = []
+
+    def factory() -> BrowserBackend:
+        made.append(FakeBackend())
+        return made[-1]
+
+    tool = Browser(workspace=tmp_path, backend_factory=factory)
+    assert tool.backend_kind == "custom"
+    res = await tool.execute(action="navigate", url="example.com")
+    assert res.ok and len(made) == 1 and tool.backend is made[0]
+    assert tool.backend_kind == "fake" and tool.open
+    await tool.execute(action="extract")
+    assert len(made) == 1
+    await tool.cleanup()
+    assert not made[0].open and tool.backend is None and tool.backend_kind == "custom"
+    res = await tool.execute(action="navigate", url="example.com")
+    assert res.ok and len(made) == 2 and tool.backend is made[1]
+
+    # a factory that hands back something else is a clear error, not a crash later
+    odd = Browser(workspace=tmp_path, backend_factory=lambda: object())  # type: ignore[arg-type,return-value]
+    res = await odd.execute(action="extract")
+    assert not res.ok and "backend_factory" in res.error
+
+
 # ----------------------------------------------------------------------------- the device protocol
 class FakeAppBrowser:
     """The Android app's side of the protocol: answers ``browser`` requests."""

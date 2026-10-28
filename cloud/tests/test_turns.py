@@ -11,7 +11,8 @@ from test_cloud import sign_up
 from test_record import ADMIN, PNG_1PX, PNG_SHA, PNG_URL, relay, settled
 
 from nanomuse_cloud import provenance, turnview
-from nanomuse_cloud.record import BLOB_PREFIX
+from nanomuse_cloud.db import KEY_ROWS_PER_TX, Database
+from nanomuse_cloud.record import BLOB_PREFIX, pack
 
 # -- the vocabulary, without a relay ---------------------------------------------------------
 
@@ -335,3 +336,100 @@ async def test_the_rows_kept_before_get_their_keys_from_the_backfill(tmp_path):
     assert two["steps"][0]["then"] == [{"role": "tool", "tool_call_id": "r1", "content": "found"}] and two["reply"] == "hi"
     # once through, the step is a no-op
     assert analytics.turn_keys_step() == 0
+
+
+# -- the figures never read the bodies; the backfill holds the lock for a moment --------------
+
+
+def _turn(db: Database, i: int, start: bool, keyed: bool = True) -> None:
+    """One kept call of a conversation: the person's message opens a turn, a tool's result
+    continues one. ``keyed`` as 0.31 writes it; else as a relay before left it (no key)."""
+    last = {"role": "user", "content": f"question {i}"} if start else {"role": "tool", "tool_call_id": f"r{i}", "content": "found"}
+    row = {
+        "id": f"t-{i:04d}",
+        "account_id": "acc-1",
+        "ts": 1_700_000_000 + i,
+        "conversation": "c-1",
+        "request": pack({"messages": [{"role": "system", "content": "SOUL"}, last]}),
+        "response": pack({"message": {"role": "assistant", "content": "ok"}}),
+        "prompt_tokens": 10,
+        "completion_tokens": 5,
+    }
+    if keyed:
+        row["turn_start"] = start
+    db.add_turn(row, [])
+
+
+def test_the_record_figures_read_their_index_and_never_the_rows(tmp_path):
+    """A turn's row carries its request, and the columns the figures sum come after it in
+    the row: a sum that reads them walks every body. The figures and the question-by-
+    question view read `turns_figures` instead — whatever the planner's statistics say,
+    since the query names the index."""
+    db = Database(str(tmp_path / "relay.db"))
+    for i in range(6):
+        _turn(db, i, start=i % 3 == 0)
+    seen: list[str] = []
+    db._conn.set_trace_callback(seen.append)
+    since = 1_700_000_000
+    db.turns_by_day(since, 0)
+    db.record_totals(0)
+    db.record_totals(since, "acc-1")
+    db.turn_figures(since)
+    db.turn_figures(since, "acc-1")
+    db.calls_per_turn(since)
+    db.calls_per_turn(since, "acc-1")
+    db.turn_groups(since)
+    db.turn_groups(since, account_id="acc-1", conversation="c-1")
+    db.turn_groups(since, media=True, hands=True, script="han", platform="android", run="person", model="m", source="cloud")
+    db.turn_groups(since, before=since + 5, before_key="t-0003")
+    db._conn.set_trace_callback(None)
+    plans = {sql: " | ".join(r[3] for r in db._conn.execute("EXPLAIN QUERY PLAN " + sql).fetchall()) for sql in seen if "FROM turns" in sql}
+    assert len(plans) == 11
+    for sql, plan in plans.items():
+        assert "USING COVERING INDEX turns_figures" in plan and "SEARCH turns USING INDEX" not in plan, (sql, plan)
+    # and the figures are right
+    assert db.turn_figures(since)["turns"] == 2 and db.calls_per_turn(since) == [(3, 2)]
+    # the page's calls and their events come by the partial indexes: a look-up by key alone
+    # did not reach them (their WHERE must be repeated) and scanned the whole record instead
+    seen.clear()
+    db._conn.set_trace_callback(seen.append)
+    assert [r["id"] for r in db.turns_of(["t-0000", "t-0003"])] == ["t-0000", "t-0001", "t-0002", "t-0003", "t-0004", "t-0005"]
+    db.client_events_for_turns(["t-0000"])
+    db._conn.set_trace_callback(None)
+    plans = [" | ".join(r[3] for r in db._conn.execute("EXPLAIN QUERY PLAN " + sql).fetchall()) for sql in seen if sql.startswith("SELECT")]
+    assert (
+        len(plans) == 2 and "USING INDEX turns_key (turn_key=?)" in plans[0] and "USING INDEX client_events_turn (turn_id=?)" in plans[1]
+    ), plans
+
+
+def test_a_page_of_keys_is_written_a_few_rows_at_a_time(tmp_path):
+    """The backfill's page goes in transactions of KEY_ROWS_PER_TX (an update rewrites the
+    row, body and all), and a row that continues a turn finds its opener's key across
+    the transactions before it."""
+    db = Database(str(tmp_path / "relay.db"))
+    n = 2 * KEY_ROWS_PER_TX + 7
+    for i in range(n):
+        _turn(db, i, start=i == 0, keyed=False)
+    commits: list[str] = []
+    db._conn.set_trace_callback(lambda sql: commits.append(sql) if sql.upper().startswith("COMMIT") else None)
+    rows = db.turns_unkeyed_page(0, 0, 1000)
+    assert len(rows) == n
+    written = db.set_turn_keys(
+        "turns",
+        [
+            {
+                "rowid": r["rowid"],
+                "id": r["id"],
+                "account_id": r["account_id"],
+                "ts": r["ts"],
+                "conversation": r["conversation"],
+                "turn_no": 0,
+                "start": i == 0,
+            }
+            for i, r in enumerate(rows)
+        ],
+    )
+    db._conn.set_trace_callback(None)
+    assert written == n and len(commits) == 3  # 25 + 25 + 7
+    keyed = db._conn.execute("SELECT turn_start, turn_key FROM turns ORDER BY ts").fetchall()
+    assert [r["turn_start"] for r in keyed] == [1] + [0] * (n - 1) and {r["turn_key"] for r in keyed} == {"t-0000"}

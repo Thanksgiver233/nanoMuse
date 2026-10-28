@@ -188,6 +188,11 @@ class Browser(BaseTool):
     # the holds registry (nanomuse.agent.holds): the tool waits while the user has the page
     holds: Any = None
     hand_over_timeout: float = HAND_OVER_TIMEOUT_S
+    # An embedding with a browser of its own (a remote browser service, say) hands the tool a
+    # factory: a new session takes the backend it returns instead of Playwright or the phone,
+    # and that backend is driven, shown in the app and closed like the two built-in ones. The
+    # Sentinel sees every URL either way. A Python integration point, not a setting.
+    backend_factory: Callable[[], BrowserBackend] | None = None
 
     _backend: Any = PrivateAttr(default=None)
     _lock: Any = PrivateAttr(default=None)
@@ -207,6 +212,12 @@ class Browser(BaseTool):
         current = self._backend
         if current is not None and current.open:
             return current
+        if self.backend_factory is not None:
+            supplied = self.backend_factory()
+            if not isinstance(supplied, BrowserBackend):
+                raise RuntimeError("the browser's backend_factory did not return a BrowserBackend")
+            self._backend = supplied
+            return supplied
         mode = self.backend_mode
         device_ready = self.link is not None and self.link.browser_device is not None
         if mode == "device" or (mode == "auto" and not playwright_available()):
@@ -242,9 +253,12 @@ class Browser(BaseTool):
 
     @property
     def backend_kind(self) -> str:
-        """Which backend a session would use now: "playwright", "device" or ""."""
+        """Which backend a session would use now: "playwright", "device", an embedding's own
+        ("custom" until it is made, then its kind) or ""."""
         if self._backend is not None and self._backend.open:
             return str(self._backend.kind)
+        if self.backend_factory is not None:
+            return "custom"
         if self.backend_mode == "device":
             return "device" if self.link is not None and self.link.browser_device else ""
         if playwright_available():

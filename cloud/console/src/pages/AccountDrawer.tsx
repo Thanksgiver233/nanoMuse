@@ -9,7 +9,7 @@ import { clientLine } from "../lib/client";
 import { compact, dateOf, dur, fmt, money, ms, when } from "../lib/format";
 import { invalidate, useData, useNow } from "../lib/hooks";
 import { nameOf, useT, useZh } from "../lib/i18n";
-import { useRoute } from "../lib/router";
+import { hashOf, useRoute } from "../lib/router";
 import type { AccountDetail, EventRow, LedgerRow, Sample } from "../lib/types";
 import { Bars, Legend, modelColor } from "../ui/charts";
 import { Bar, Btn, DataTable, Drawer, Failed, KV, Loading, Note, Panel, Pill, Search, Tabs, useDialog, useToast, type Col } from "../ui/primitives";
@@ -541,7 +541,23 @@ function SamplesTab({ id, total }: { id: string; total: number }) {
   }, [load]);
   const exportAll = () => download(`/v1/admin/samples/export?account_id=${encodeURIComponent(id)}`, `nanomuse-samples-${id.slice(0, 8)}.jsonl`).catch((e) => toast(String(e.message || e), "bad"));
   return (
-    <Panel title={<span>{T.ac.tabs.samples} <span className="hint font-normal">{T.ac.ofTotal(rows.length, total)}</span></span>} right={total > 0 && <Btn size="sm" onClick={exportAll}>{T.ac.samplesExport}</Btn>}>
+    <Panel
+      title={<span>{T.ac.tabs.samples} <span className="hint font-normal">{T.ac.ofTotal(rows.length, total)}</span></span>}
+      sub={total > 0 ? T.ac.samplesHint : undefined}
+      right={
+        total > 0 && (
+          <span className="flex items-center gap-3">
+            {/* the same turns laid out one question at a time, pictures included; the drawer closes */}
+            <a className="text-accent text-sm whitespace-nowrap" href={hashOf("turns", { account: id })}>
+              {T.ac.samplesByQuestion} →
+            </a>
+            <Btn size="sm" onClick={exportAll}>
+              {T.ac.samplesExport}
+            </Btn>
+          </span>
+        )
+      }
+    >
       <div className="flex flex-col gap-2">
         {rows.map((s) => (
           <SampleCard key={s.id} s={s} />
