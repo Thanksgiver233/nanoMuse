@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import uuid
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from nanomuse.contacts import ContactBook
 from nanomuse.goals import GoalStore
 from nanomuse.llm import BaseLLM, catalogue, create_llm
 from nanomuse.llm.catalogue import Provider
+from nanomuse.llm.fallback import FallbackLLM
 from nanomuse.logger import logger, setup_logging
 from nanomuse.memory import Embedder, MemoryIndex, MemoryStore
 from nanomuse.phone import PhoneLink
@@ -275,7 +277,7 @@ class NanoMuseApp:
                 max_tokens=llm.max_tokens,
                 timeout=llm.timeout,
             )
-            return create_llm(merged, data_dir=self.settings.data_dir)
+            return self._gui_llm_with_fallback(merged)
         # `[gui] provider` may be a catalogue id, which brings its own endpoint
         gui_base = gui.endpoint
         own_host = bool(gui_base) and gui_base != llm.endpoint
@@ -300,7 +302,33 @@ class NanoMuseApp:
             # the same host is reached the same way: through the chat model's proxy
             proxy=llm.proxy if not own_host else "",
         )
-        return create_llm(merged, data_dir=self.settings.data_dir)
+        return self._gui_llm_with_fallback(merged)
+
+    def _gui_llm_with_fallback(self, merged: LLMSettings) -> BaseLLM:
+        """The hands client, with the configured fallback chain when there is one.
+
+        ``[gui] fallback_models`` names model ids to try in order when the
+        primary fails. The chain requires vision, so a text-only fallback is
+        skipped rather than silently answering without the screen (Phase 2).
+        """
+        primary = create_llm(merged, data_dir=self.settings.data_dir)
+        fallbacks = list(self.settings.gui.fallback_models)
+        if not fallbacks:
+            return primary
+
+        def build_primary() -> BaseLLM:
+            return primary
+
+        factories: list[Callable[[], BaseLLM]] = [build_primary]
+        for fallback_model in fallbacks:
+
+            def build_fallback(model: str = fallback_model) -> BaseLLM:
+                return create_llm(
+                    merged.model_copy(update={"model": model}), data_dir=self.settings.data_dir
+                )
+
+            factories.append(build_fallback)
+        return FallbackLLM(factories, requires_vision=True)
 
     # ------------------------------------------------------------------ tools
     def _build_tools(self) -> ToolCollection:

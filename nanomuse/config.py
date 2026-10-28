@@ -433,6 +433,10 @@ class GUISettings(BaseModel):
     enabled: bool = False
     provider: str = "openai"
     model: str = ""
+    # Model ids to try in order when the hands model fails (Phase 2, Gate 1 ③).
+    # Only models that take images are ever tried for a hands task: a text-only
+    # fallback is skipped, never a silent downgrade. Empty means no fallback.
+    fallback_models: list[str] = Field(default_factory=list)
     base_url: str | None = None
     api_key: str = ""
 
