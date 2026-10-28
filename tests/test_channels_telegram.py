@@ -224,7 +224,12 @@ async def test_replies_stream_by_editing_and_buttons_decide(tg: FakeTelegram):
         }
     )
     await until(lambda: bus.actions)
-    assert bus.actions[0] == ("telegram", "1001", "1001", {"approval": "ap-1", "decision": "deny"})
+    assert bus.actions[0] == (
+        "telegram",
+        "1001",
+        "1001",
+        {"approval": "ap-1", "decision": "deny", "is_group": False},
+    )
     await until(lambda: tg.of("answerCallbackQuery") and tg.of("editMessageReplyMarkup"))
     # typing on/off
     await ch.typing("1001", True)

@@ -184,6 +184,29 @@ of them, useful from a script or a reminder.
   nothing is remembered from a chat.
 * The channel data lives in the data directory, outside the agent's reach.
 * The connections are outbound only; no port is opened and no public URL is involved.
+* **Discretion, the same for every app.** Before the agent hears about a message or
+  an approval answer, one matrix decides: an unlisted sender is heard by nobody; a
+  group chat never settles an approval (groups are read-only for approvals, which
+  are answered in a direct chat); a group with the `mention` policy is heard only
+  when the bot was addressed. An approval card is answered only from the chat it
+  was asked in, so an approval id copied into another chat settles nothing. A
+  message the vendor delivers twice is handled once: the manager remembers the
+  last 1,000 message ids per channel and drops redeliveries.
+* **Telegram webhooks are verified.** When a `webhook_secret` is set, a webhook
+  update must carry it as `X-Telegram-Bot-Api-Secret-Token`; anything else is
+  refused before it reaches the bus. Without a secret, webhooks are not accepted
+  at all and the channel polls.
+* **A channel can run in its own process** (`nanomuse.channels.worker`): the child
+  runs the vendor loop and hands the manager JSON lines; when the child dies, the
+  manager reports the channel as `error` and the agent keeps running. The worker
+  is not wired into the manager yet; the in-process path stays the default.
+
+> Design note (Feishu, DingTalk, WeCom): the hardening above is written once, in
+> the manager and the shared channel base, so the other three apps inherit the
+> discretion matrix, the approval origin check, the redelivery dedup and the
+> worker shape without per-vendor code. What each still needs is its own webhook
+> signature check (each vendor signs differently) and a soak against its sandbox;
+> neither is claimed here.
 
 ## Troubleshooting
 
