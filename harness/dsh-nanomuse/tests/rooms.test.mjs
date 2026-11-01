@@ -125,3 +125,34 @@ test('exported proxy settings remove URL userinfo', async () => {
   assert.equal(redacted.proxy, 'http://proxy.example:8080')
   assert.equal(redacted.menuBar, true)
 })
+
+test('a file name a person typed or brought in becomes one safe path segment (#689)', async () => {
+  const { safeStem } = await import('../lib/rooms.js')
+  assert.equal(safeStem('notes.md'), 'notes')
+  assert.equal(safeStem('C:\\Users\\me\\Reading list.markdown'), 'Reading list')
+  assert.equal(safeStem('../../etc/passwd.txt'), 'passwd')
+  assert.equal(safeStem('what: "a-b" | c?*.txt'), 'what a-b c')
+  assert.equal(safeStem('会议纪要 2026-10.md'), '会议纪要 2026-10')
+  assert.equal(safeStem('trailing dots... .md'), 'trailing dots')
+  assert.equal(safeStem('.md'), '')
+  assert.equal(safeStem('   '), '')
+  assert.equal(safeStem(`${'x'.repeat(200)}.md`).length, 80)
+})
+
+test('a new file takes the next free number instead of overwriting (#689)', async () => {
+  const { freePath } = await import('../lib/rooms.js')
+  const { mkdtemp, rm, writeFile } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { basename, join } = await import('node:path')
+  const dir = await mkdtemp(join(tmpdir(), 'nm-library-'))
+  try {
+    assert.equal(basename(await freePath(dir, 'Untitled', '.md')), 'Untitled.md')
+    await writeFile(join(dir, 'Untitled.md'), '')
+    assert.equal(basename(await freePath(dir, 'Untitled', '.md')), 'Untitled (2).md')
+    await writeFile(join(dir, 'Untitled (2).md'), '')
+    assert.equal(basename(await freePath(dir, 'Untitled', '.md')), 'Untitled (3).md')
+    assert.equal(basename(await freePath(dir, 'Untitled', '.txt')), 'Untitled.txt')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

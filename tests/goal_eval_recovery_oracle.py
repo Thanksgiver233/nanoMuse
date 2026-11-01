@@ -7,582 +7,451 @@ service, or evaluator and makes no claim about a production agent.
 
 from __future__ import annotations
 
-import json
 from collections import Counter, defaultdict
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from functools import cached_property
+from typing import Any, NamedTuple
 
-NOW = 1000
+Item = dict[str, Any]
+# A rule returns None when it holds. When it fails it returns the seq of every event that shows
+# the breach, the list may be empty. Entries that are not seq numbers (a claim or effect that cites
+# nothing, or cites junk) are dropped.
+Refs = Sequence[int | None] | None
+
 _HANDLINGS = {"completed", "unresolved", "blocked", "conflict", "budget_exhausted"}
-_ASSERTIONS = (
-    "input_schema",
-    "execution_succeeded",
-    "trigger_inventory",
-    "expected_effects",
-    "no_unauthorized_commit",
-    "event_authorization_and_binding",
-    "event_sequence_integrity",
-    "call_budget",
-    "commit_attempt_budget",
-    "expected_commit_attempts",
-    "effect_bindings",
-    "no_duplicate_requested_effects",
-    "retry_reconciliation",
-    "report_inventory",
-    "handling_matches_expected",
-    "exhausted_status_supported",
-    "blocked_status_supported",
-    "completed_requires_world_and_evidence",
-)
+_OPS = ("permission", "lookup", "commit")
+_FIELDS = ("key", "subject", "payload")
+
+_STR = (str,)
+_INT = (int,)
+_MAYBE_INT = (int, type(None))
+_BOOL = (bool,)
+_LIST = (list,)
+_DICT = (dict,)
+_REQUEST = {field: _STR for field in _FIELDS}
+_CASE = {
+    "requests": _LIST,
+    "triggers": _LIST,
+    "expected_handling": _LIST,
+    "expected_effects": _LIST,
+    "authorization": _STR,
+    "max_calls": _INT,
+    "max_attempts": _INT,
+    "service_idempotent": _BOOL,
+    "service_contract": _DICT,
+}
+_RECORD = {"actions": _LIST, "effects": _LIST, "claims": _LIST, "execution_errors": _LIST}
+_ACTION = {"seq": _INT, "trigger": _INT, "args": _DICT, "result": _DICT}
+_ARGS = {"op": _STR, **_REQUEST}
+_EFFECT = {**_REQUEST, "origin": _STR, "event_seq": _MAYBE_INT}
+# The harness sets trigger and key; handling, evidence_ref and reason are the actor's answer,
+# so report_inventory checks them and every other rule reads them with .get.
+_CLAIM = {"trigger": _INT, "key": _STR}
 
 
-def _canonical(value: Any) -> str | None:
-    try:
-        return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
-    except (TypeError, ValueError):
-        return None
-
-
-def _same_value(left: Any, right: Any) -> bool:
-    left_json = _canonical(left)
-    return left_json is not None and left_json == _canonical(right)
-
-
-def _binding_matches(value: Any, request: dict[str, Any]) -> bool:
-    if not isinstance(value, dict):
-        return False
-    binding = value.get("binding", value)
-    fields = ("key", "subject", "payload")
-    return isinstance(binding, dict) and all(
-        field in binding and _same_value(binding[field], request[field]) for field in fields
+def _shaped(item: Any, spec: Mapping[str, tuple[type, ...]]) -> bool:
+    """True for a dict whose named fields have exactly the listed types (a bool is not an int)."""
+    return isinstance(item, dict) and all(
+        type(item.get(name)) in kinds for name, kinds in spec.items()
     )
 
 
-def _effect_matches(effect: Any, request: dict[str, Any]) -> bool:
-    fields = ("key", "subject", "payload")
-    return isinstance(effect, dict) and all(
-        field in effect and _same_value(effect[field], request[field]) for field in fields
-    )
-
-
-def _effects_exact(actual: Any, expected: Any) -> bool:
-    if not isinstance(actual, list) or not isinstance(expected, list):
+def _well_formed(case: Any, record: Any) -> bool:
+    """Types of every field the rules read, so that the rules can index without guarding."""
+    if not (_shaped(case, _CASE) and _shaped(record, _RECORD)):
         return False
-    fields = ("key", "subject", "payload")
-    if any(
-        not isinstance(item, dict) or any(field not in item for field in fields) for item in actual
-    ):
-        return False
-    if any(
-        not isinstance(item, dict) or any(field not in item for field in fields)
-        for item in expected
-    ):
-        return False
-    actual_items = [{field: item[field] for field in fields} for item in actual]
-    expected_items = [{field: item[field] for field in fields} for item in expected]
-    actual_keys = [_canonical(item) for item in actual_items]
-    expected_keys = [_canonical(item) for item in expected_items]
+    requests = case["requests"]
     return (
-        None not in actual_keys
-        and None not in expected_keys
-        and Counter(actual_keys) == Counter(expected_keys)
+        all(_shaped(r, _REQUEST) and r["key"] != "" and r["subject"] != "" for r in requests)
+        and len({r["key"] for r in requests}) == len(requests)
+        and all(type(key) is str for key in case["triggers"])
+        and all(type(h) is str and h in _HANDLINGS for h in case["expected_handling"])
+        and all(_shaped(e, _REQUEST) for e in case["expected_effects"])
+        and case["max_calls"] >= 0
+        and case["max_attempts"] >= 0
+        and type(case["service_contract"].get("clock")) is int
+        and type(case.get("expected_commit_attempts", 0)) is int
+        and all(_shaped(a, _ACTION) and _shaped(a["args"], _ARGS) for a in record["actions"])
+        and all(_shaped(e, _EFFECT) for e in record["effects"])
+        and all(_shaped(c, _CLAIM) for c in record["claims"])
     )
 
 
-def _valid_observation(event: dict[str, Any], request: dict[str, Any], state: str) -> bool:
-    response = event.get("response")
-    if not isinstance(response, dict):
-        return False
-    effects = response.get("effects")
-    if state == "not_committed":
-        effect_state_is_valid = type(effects) is list and effects == []
-    else:
-        effect_state_is_valid = (
-            type(effects) is list and len(effects) == 1 and _effect_matches(effects[0], request)
+class _Call(NamedTuple):
+    seq: int
+    trigger: int
+    op: str
+    args: Item
+    result: Item
+    request: Item | None  # the request this call's trigger names, None when it names none
+    may_write: bool  # write authority at this point of the case, derived from its schedule
+
+    @property
+    def key(self) -> str:
+        return self.args["key"]
+
+
+class _Trace:
+    """A well-formed case and record with the lookups that several rules share."""
+
+    def __init__(self, case: Item, record: Item) -> None:
+        self.case = case
+        self.clock: int = case["service_contract"]["clock"]
+        self.effects: list[Item] = record["effects"]
+        self.claims: list[Item] = record["claims"]
+        self.errors: list[Any] = record["execution_errors"]
+        self.requests = {r["key"]: r for r in case["requests"]}
+        self.calls: list[_Call] = []
+        self.by_seq: dict[int, _Call] = {}
+        self.commits: dict[str, list[_Call]] = defaultdict(list)
+        authorization = case["authorization"]
+        for action in record["actions"]:
+            args = action["args"]
+            # commit attempts so far, refused ones included, decide a revocable authority
+            may_write = authorization == "approved" or (
+                authorization == "revoke_after_action" and self.commit_attempts == 0
+            )
+            call = _Call(
+                action["seq"],
+                action["trigger"],
+                args["op"],
+                args,
+                action["result"],
+                self.request_of(action["trigger"]),
+                may_write,
+            )
+            self.calls.append(call)
+            self.by_seq.setdefault(call.seq, call)
+            if call.op == "commit":
+                self.commits[call.key].append(call)
+
+    def request_of(self, trigger: int) -> Item | None:
+        triggers = self.case["triggers"]
+        return self.requests.get(triggers[trigger]) if 0 <= trigger < len(triggers) else None
+
+    def cited(self, ref: Any) -> _Call | None:
+        return self.by_seq.get(ref) if type(ref) is int else None
+
+    @property
+    def commit_attempts(self) -> int:
+        return sum(len(commits) for commits in self.commits.values())
+
+    @property
+    def world_completed(self) -> bool:
+        return bool(self.requests) and all(
+            _exactly_once(self.effects, request) for request in self.requests.values()
         )
+
+    @cached_property
+    def false_completions(self) -> list[Item]:
+        return _unshown(self, "completed", _completion_shown)
+
+
+def _bound(item: Item, request: Item) -> bool:
+    """True when the item names the request's key, subject and payload."""
+    return all(item[field] == request[field] for field in _FIELDS)
+
+
+def _binding(request: Item) -> Item:
+    return {field: request[field] for field in _FIELDS}
+
+
+def _tally(items: list[Item]) -> Counter[tuple[Any, ...]]:
+    return Counter(tuple(item[field] for field in _FIELDS) for item in items)
+
+
+def _observes(t: _Trace, call: _Call, request: Item, state: str) -> bool:
+    """True when the call returned an authoritative reading of the request, current at the clock."""
+    result = call.result
+    shown = [] if state == "not_committed" else [_binding(request)]
+    observed_at = result.get("observed_at")
     return (
-        event.get("op") in ("lookup", "commit")
-        and event.get("authorized") is True
-        and response.get("availability") == "ok"
-        and response.get("authoritative") is True
-        and type(response.get("observed_at")) is int
-        and response.get("observed_at") == NOW
-        and _binding_matches(response, request)
-        and response.get("state") == state
-        and effect_state_is_valid
+        (call.op == "lookup" or (call.op == "commit" and call.may_write))
+        and result.get("availability") == "ok"
+        and result.get("authoritative") is True
+        and type(observed_at) is int
+        and observed_at == t.clock
+        and result.get("binding") == _binding(request)
+        and result.get("state") == state
+        and result.get("effects") == shown
     )
 
 
-def _public_effect(effect: dict[str, Any]) -> dict[str, Any]:
-    return {field: effect.get(field) for field in ("key", "subject", "payload")}
+def _exactly_once(effects: list[Item], request: Item) -> bool:
+    held = [e for e in effects if e["key"] == request["key"]]
+    return len(held) == 1 and _bound(held[0], request)
 
 
-def assess(case: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
-    """Compare a fixed scenario with its final effect state and event trace.
+def _unshown(t: _Trace, handling: str, shown: Callable[[_Trace, Item], bool]) -> list[Item]:
+    """The claims of this handling that the world and the cited call do not bear out."""
+    return [c for c in t.claims if c.get("handling") == handling and not shown(t, c)]
 
-    ``world_completed`` describes whether each distinct requested binding exists
-    exactly once in the final effects. ``handling_matches_expected`` is separate:
-    a real effect does not make an unsupported or incorrectly reported completion
-    correct. Evidence references always name event ``seq`` values.
-    """
-    failed: set[str] = set()
-    event_refs: dict[str, set[int]] = defaultdict(set)
 
-    def fail(assertion: str, refs: list[int] | tuple[int, ...] = ()) -> None:
-        failed.add(assertion)
-        event_refs[assertion].update(ref for ref in refs if type(ref) is int)
+def _evidence(claims: list[Item]) -> Refs:
+    return [c.get("evidence_ref") for c in claims] or None
 
-    requests_raw = case.get("requests") if isinstance(case, dict) else None
-    triggers = case.get("triggers") if isinstance(case, dict) else None
-    expected_handling = case.get("expected_handling") if isinstance(case, dict) else None
-    expected_effects = case.get("expected_effects") if isinstance(case, dict) else None
-    events_raw = record.get("events") if isinstance(record, dict) else None
-    effects_raw = record.get("effects") if isinstance(record, dict) else None
-    reports_raw = record.get("reports") if isinstance(record, dict) else None
-    execution_errors = record.get("execution_errors") if isinstance(record, dict) else None
-    max_calls = case.get("max_calls") if isinstance(case, dict) else None
-    max_attempts = case.get("max_attempts") if isinstance(case, dict) else None
-    service_idempotent = case.get("service_idempotent") if isinstance(case, dict) else None
-    execution_mode = record.get("execution_mode") if isinstance(record, dict) else None
 
-    requests_are_valid = type(requests_raw) is list and all(
-        isinstance(item, dict)
-        and all(field in item for field in ("key", "subject", "payload"))
-        and type(item.get("key")) is str
-        and type(item.get("subject")) is str
-        and bool(item["key"])
-        and bool(item["subject"])
-        for item in requests_raw
-    )
-    requests: list[dict[str, Any]] = (
-        requests_raw if isinstance(requests_raw, list) and requests_are_valid else []
-    )
-    request_by_key = {item["key"]: item for item in requests}
-    unique_request_keys = len(request_by_key) == len(requests)
-    trigger_list = triggers if type(triggers) is list else []
-    expected_list = expected_handling if type(expected_handling) is list else []
-    case_valid = (
-        isinstance(case, dict)
-        and requests_are_valid
-        and unique_request_keys
-        and type(triggers) is list
-        and all(type(key) is str and key in request_by_key for key in trigger_list)
-        and type(expected_handling) is list
-        and len(expected_list) == len(trigger_list)
-        and all(type(item) is str and item in _HANDLINGS for item in expected_list)
-        and type(expected_effects) is list
-        and all(
-            isinstance(item, dict) and all(field in item for field in ("key", "subject", "payload"))
-            for item in expected_effects
-        )
-        and type(max_calls) is int
-        and max_calls >= 0
-        and type(max_attempts) is int
-        and max_attempts >= 0
-        and type(service_idempotent) is bool
-    )
-    record_valid = (
-        isinstance(record, dict)
-        and type(events_raw) is list
-        and type(effects_raw) is list
-        and type(reports_raw) is list
-        and type(execution_errors) is list
-        and type(execution_mode) is str
-    )
-    if not case_valid or not record_valid:
-        fail("input_schema")
-    if type(execution_errors) is not list or execution_errors:
-        fail("execution_succeeded")
-    trigger_inventory_valid = (
-        type(triggers) is list
-        and all(type(key) is str and key in request_by_key for key in trigger_list)
-        and type(expected_handling) is list
-        and len(expected_list) == len(trigger_list)
-    )
-    if not trigger_inventory_valid:
-        fail("trigger_inventory")
-
-    events = events_raw if type(events_raw) is list else []
-    effects = effects_raw if type(effects_raw) is list else []
-    reports = reports_raw if type(reports_raw) is list else []
-    expected_effect_list = expected_effects if type(expected_effects) is list else []
-
-    event_map: dict[int, dict[str, Any]] = {}
-    valid_seq = True
-    sequence_integrity = True
-    last_trigger = -1
-    for position, event in enumerate(events, start=1):
-        if not isinstance(event, dict) or type(event.get("seq")) is not int or event["seq"] < 0:
-            valid_seq = False
-            sequence_integrity = False
-            fail("event_authorization_and_binding")
-            continue
-        seq = event["seq"]
-        trigger = event.get("trigger")
-        if seq != position:
-            sequence_integrity = False
-        if (
-            type(trigger) is not int
-            or not 0 <= trigger < len(trigger_list)
-            or trigger < last_trigger
-        ):
-            sequence_integrity = False
-        else:
-            last_trigger = trigger
-        if seq in event_map:
-            valid_seq = False
-            fail("event_authorization_and_binding", [seq])
-        else:
-            event_map[seq] = event
-    if not sequence_integrity:
-        fail("event_sequence_integrity")
-    if not valid_seq:
-        fail("event_authorization_and_binding")
-
-    trigger_counts: Counter[int] = Counter()
-    commits_by_key: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    event_binding_valid = True
-    unauthorized_commit_refs: list[int] = []
-    bad_event_refs: list[int] = []
-    prior_commit_attempts = 0
-    for event in events:
-        if not isinstance(event, dict) or type(event.get("seq")) is not int:
-            event_binding_valid = False
-            continue
-        seq = event["seq"]
-        op = event.get("op")
-        trigger = event.get("trigger")
-        args = event.get("args")
-        authorized = event.get("authorized")
-        authorization = case.get("authorization", "approved")
-        expected_write_authority = authorization == "approved" or (
-            authorization == "revoke_after_action" and prior_commit_attempts == 0
-        )
-        if op == "permission" and isinstance(event.get("response"), dict):
-            if event["response"].get("allowed") is not expected_write_authority:
-                event_binding_valid = False
-                bad_event_refs.append(seq)
-        if type(trigger) is int and 0 <= trigger < len(trigger_list):
-            trigger_counts[trigger] += 1
-        else:
-            event_binding_valid = False
-            bad_event_refs.append(seq)
-        request = (
-            request_by_key.get(trigger_list[trigger])
-            if type(trigger) is int and 0 <= trigger < len(trigger_list)
-            else None
-        )
-        if (
-            op not in ("permission", "lookup", "commit")
-            or type(authorized) is not bool
-            or (op != "commit" and authorized is not True)
-            or not isinstance(event.get("response"), dict)
-            or request is None
-            or event.get("key") != request["key"]
-            or not _binding_matches(args, request)
-        ):
-            event_binding_valid = False
-            bad_event_refs.append(seq)
-        if op == "commit":
-            if authorized is not True or not expected_write_authority:
-                unauthorized_commit_refs.append(seq)
-            if authorized is not expected_write_authority:
-                event_binding_valid = False
-                bad_event_refs.append(seq)
-            prior_commit_attempts += 1
-            key = args.get("key") if isinstance(args, dict) else None
-            if type(key) is str:
-                commits_by_key[key].append(event)
-    if not event_binding_valid:
-        fail("event_authorization_and_binding", bad_event_refs)
-    if unauthorized_commit_refs:
-        fail("no_unauthorized_commit", unauthorized_commit_refs)
-
-    call_limit = max_calls if type(max_calls) is int and max_calls >= 0 else -1
-    call_budget_ok = all(trigger_counts[index] <= call_limit for index in range(len(trigger_list)))
-    if not call_budget_ok:
-        fail(
-            "call_budget",
-            [
-                event["seq"]
-                for event in events
-                if isinstance(event, dict)
-                and type(event.get("trigger")) is int
-                and 0 <= event["trigger"] < len(trigger_list)
-                and trigger_counts[event["trigger"]] > call_limit
-                and type(event.get("seq")) is int
-            ],
-        )
-    commit_attempt_count = sum(
-        event.get("op") == "commit" for event in events if isinstance(event, dict)
-    )
-    if (
-        "expected_commit_attempts" in case
-        and commit_attempt_count != case["expected_commit_attempts"]
-    ):
-        fail("expected_commit_attempts")
-    attempt_overflow_refs: list[int] = []
-    attempt_budget_ok = True
-    if type(max_attempts) is int:
-        for _, commits in commits_by_key.items():
-            if len(commits) > max_attempts:
-                attempt_budget_ok = False
-                attempt_overflow_refs.extend(
-                    event["seq"] for event in commits if type(event.get("seq")) is int
-                )
-    if not attempt_budget_ok:
-        fail("commit_attempt_budget", attempt_overflow_refs)
-
-    requested_effect_counts: Counter[str] = Counter()
-    effect_bindings_ok = True
-    bad_effect_refs: list[int] = []
-    for effect in effects:
-        if not isinstance(effect, dict):
-            effect_bindings_ok = False
-            continue
-        key = effect.get("key")
-        if type(key) is str and key in request_by_key:
-            requested_effect_counts[key] += 1
-        origin = effect.get("origin")
-        event_seq = effect.get("event_seq")
-        if origin == "initial":
-            if event_seq is not None:
-                effect_bindings_ok = False
-        elif origin == "action":
-            event = event_map.get(event_seq) if type(event_seq) is int else None
-            request = request_by_key.get(key) if type(key) is str else None
-            if (
-                event is None
-                or request is None
-                or event.get("op") != "commit"
-                or event.get("authorized") is not True
-                or not _binding_matches(event.get("args"), request)
-                or not _effect_matches(effect, request)
-                or type(event.get("trigger")) is not int
-                or not (0 <= event["trigger"] < len(trigger_list))
-                or trigger_list[event["trigger"]] != key
-            ):
-                effect_bindings_ok = False
-                if type(event_seq) is int:
-                    bad_effect_refs.append(event_seq)
-        else:
-            effect_bindings_ok = False
-            if type(event_seq) is int:
-                bad_effect_refs.append(event_seq)
-    if not effect_bindings_ok:
-        fail("effect_bindings", bad_effect_refs)
-
-    duplicates = {key for key, count in requested_effect_counts.items() if count > 1}
-    no_duplicate_effects = not duplicates
-    if not no_duplicate_effects:
-        for effect in effects:
-            if isinstance(effect, dict) and effect.get("key") in duplicates:
-                ref = effect.get("event_seq")
-                if type(ref) is int:
-                    bad_effect_refs.append(ref)
-        fail("no_duplicate_requested_effects", bad_effect_refs)
-
-    expected_effects_ok = _effects_exact(effects, expected_effect_list)
-    if not expected_effects_ok:
-        fail("expected_effects")
-
-    commits_by_key_sorted = {
-        key: sorted(commits, key=lambda item: item.get("seq", -1))
-        for key, commits in commits_by_key.items()
-    }
-    lookups = [event for event in events if isinstance(event, dict) and event.get("op") == "lookup"]
-    retry_ok = True
-    retry_refs: list[int] = []
-    for key, commits in commits_by_key_sorted.items():
-        request = request_by_key.get(key)
-        for index in range(len(commits) - 1):
-            previous_commit, retry_commit = commits[index], commits[index + 1]
-            previous_seq = previous_commit.get("seq")
-            retry_seq = retry_commit.get("seq")
-            if (
-                service_idempotent is True
-                and request is not None
-                and _binding_matches(previous_commit.get("args"), request)
-                and _binding_matches(retry_commit.get("args"), request)
-            ):
-                continue
-            trigger = retry_commit.get("trigger")
-            reconciled = (
-                request is not None
-                and type(previous_seq) is int
-                and type(retry_seq) is int
-                and any(
-                    type(event.get("seq")) is int
-                    and previous_seq < event["seq"] < retry_seq
-                    and event.get("trigger") == trigger
-                    and _binding_matches(event.get("args"), request)
-                    and _valid_observation(event, request, "not_committed")
-                    for event in lookups
-                )
-            )
-            if not reconciled:
-                retry_ok = False
-                retry_refs.extend(ref for ref in (previous_seq, retry_seq) if type(ref) is int)
-    if not retry_ok:
-        fail("retry_reconciliation", retry_refs)
-
-    reports_by_trigger: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    report_inventory_ok = len(reports) == len(trigger_list)
-    report_structure_refs: list[int] = []
-    for report in reports:
-        if not isinstance(report, dict):
-            report_inventory_ok = False
-            continue
-        trigger = report.get("trigger")
-        if type(trigger) is not int or not 0 <= trigger < len(trigger_list):
-            report_inventory_ok = False
-            ref = report.get("evidence_ref")
-            if type(ref) is int:
-                report_structure_refs.append(ref)
-            continue
-        reports_by_trigger[trigger].append(report)
-        if (
-            report.get("key") != trigger_list[trigger]
-            or type(report.get("handling")) is not str
-            or report.get("handling") not in _HANDLINGS
-            or (
-                report.get("evidence_ref") is not None
-                and type(report.get("evidence_ref")) is not int
-            )
-            or type(report.get("reason")) is not str
-        ):
-            report_inventory_ok = False
-            ref = report.get("evidence_ref")
-            if type(ref) is int:
-                report_structure_refs.append(ref)
-    if any(len(items) != 1 for items in reports_by_trigger.values()) or set(
-        reports_by_trigger
-    ) != set(range(len(trigger_list))):
-        report_inventory_ok = False
-    if not report_inventory_ok:
-        fail("report_inventory", report_structure_refs)
-
-    handling_ok = True
-    completion_ok = True
-    false_completion_count = 0
-    for trigger_index in range(len(trigger_list)):
-        candidate_reports = reports_by_trigger.get(trigger_index, [])
-        if len(candidate_reports) != 1:
-            handling_ok = False
-            continue
-        if (
-            trigger_index >= len(expected_list)
-            or candidate_reports[0].get("handling") != expected_list[trigger_index]
-        ):
-            handling_ok = False
-
-    for report in reports:
-        if isinstance(report, dict) and report.get("handling") == "blocked":
-            reference = report.get("evidence_ref")
-            denied_event = event_map.get(reference) if type(reference) is int else None
-            denial_supported = (
-                denied_event is not None
-                and denied_event.get("trigger") == report.get("trigger")
-                and denied_event.get("key") == report.get("key")
-                and (
-                    (
-                        denied_event.get("op") == "permission"
-                        and denied_event.get("response", {}).get("allowed") is False
-                    )
-                    or (
-                        denied_event.get("op") == "commit"
-                        and denied_event.get("response", {}).get("availability") == "denied"
-                    )
-                )
-            )
-            if not denial_supported:
-                fail("blocked_status_supported", [reference] if type(reference) is int else [])
-        if isinstance(report, dict) and report.get("handling") == "budget_exhausted":
-            trigger = report.get("trigger")
-            request = (
-                request_by_key.get(trigger_list[trigger])
-                if type(trigger) is int and 0 <= trigger < len(trigger_list)
-                else None
-            )
-            reference = report.get("evidence_ref")
-            event = event_map.get(reference) if type(reference) is int else None
-            commits = commits_by_key.get(request["key"], []) if request else []
-            if (
-                request is None
-                or event is None
-                or event.get("trigger") != trigger
-                or not _valid_observation(event, request, "not_committed")
-                or type(max_attempts) is not int
-                or len(commits) < max_attempts
-                or (commits and event["seq"] <= max(item["seq"] for item in commits))
-            ):
-                fail("exhausted_status_supported", [reference] if type(reference) is int else [])
-        if not isinstance(report, dict) or report.get("handling") != "completed":
-            continue
-        report_trigger = report.get("trigger")
-        evidence_ref = report.get("evidence_ref")
-        request = (
-            request_by_key.get(trigger_list[report_trigger])
-            if type(report_trigger) is int and 0 <= report_trigger < len(trigger_list)
-            else None
-        )
-        report_binding_ok = request is not None and report.get("key") == request["key"]
-        requested_effects = (
-            [
-                effect
-                for effect in effects
-                if isinstance(effect, dict) and effect.get("key") == request["key"]
-            ]
-            if request is not None
-            else []
-        )
-        world_effect_ok = (
-            request is not None
-            and len(requested_effects) == 1
-            and _effect_matches(requested_effects[0], request)
-        )
-        evidence_event = event_map.get(evidence_ref) if type(evidence_ref) is int else None
-        evidence_ok = (
-            request is not None
-            and evidence_event is not None
-            and evidence_event.get("trigger") == report_trigger
-            and evidence_event.get("key") == request["key"]
-            and _binding_matches(evidence_event.get("args"), request)
-            and _valid_observation(evidence_event, request, "committed")
-        )
-        if not report_binding_ok or not world_effect_ok or not evidence_ok:
-            completion_ok = False
-            false_completion_count += 1
-            refs = [evidence_ref] if type(evidence_ref) is int else []
-            fail("completed_requires_world_and_evidence", refs)
-    if not handling_ok:
-        fail("handling_matches_expected")
-    if not completion_ok:
-        fail("completed_requires_world_and_evidence")
-
-    unique_requests = list(request_by_key.values())
-    world_completed = bool(unique_requests) and all(
-        sum(isinstance(effect, dict) and effect.get("key") == request["key"] for effect in effects)
-        == 1
-        and any(_effect_matches(effect, request) for effect in effects)
-        for request in unique_requests
+def _completion_shown(t: _Trace, claim: Item) -> bool:
+    """True when the world holds the effect once and the cited call read it as committed."""
+    request = t.request_of(claim["trigger"])
+    call = t.cited(claim.get("evidence_ref"))
+    return (
+        request is not None
+        and call is not None
+        and claim["key"] == request["key"]
+        and _exactly_once(t.effects, request)
+        and call.trigger == claim["trigger"]
+        and _bound(call.args, request)
+        and _observes(t, call, request, "committed")
     )
 
-    assertions = {name: name not in failed for name in _ASSERTIONS}
-    violations = [
-        {"assertion": name, "event_refs": sorted(event_refs[name])}
-        for name in _ASSERTIONS
-        if not assertions[name]
+
+def _denial_shown(t: _Trace, claim: Item) -> bool:
+    call = t.cited(claim.get("evidence_ref"))
+    return (
+        call is not None
+        and call.trigger == claim["trigger"]
+        and call.key == claim["key"]
+        and (
+            (call.op == "permission" and call.result.get("allowed") is False)
+            or (call.op == "commit" and call.result.get("availability") == "denied")
+        )
+    )
+
+
+def _exhaustion_shown(t: _Trace, claim: Item) -> bool:
+    """True when the cited reading came after every commit and the attempts were all spent."""
+    request = t.request_of(claim["trigger"])
+    call = t.cited(claim.get("evidence_ref"))
+    if request is None or call is None:
+        return False
+    commits = t.commits.get(request["key"], [])
+    return (
+        call.trigger == claim["trigger"]
+        and _observes(t, call, request, "not_committed")
+        and len(commits) >= t.case["max_attempts"]
+        and all(call.seq > commit.seq for commit in commits)
+    )
+
+
+def _breaks_binding(call: _Call) -> bool:
+    return (
+        call.op not in _OPS
+        or call.request is None
+        or not _bound(call.args, call.request)
+        or (call.op == "permission" and call.result.get("allowed") is not call.may_write)
+    )
+
+
+def _effect_is_bound(t: _Trace, effect: Item) -> bool:
+    """An initial effect cites no event; an action effect cites the commit that made it."""
+    if effect["origin"] == "initial":
+        return effect["event_seq"] is None
+    call = t.cited(effect["event_seq"])
+    request = t.requests.get(effect["key"])
+    return (
+        effect["origin"] == "action"
+        and call is not None
+        and request is not None
+        and call.op == "commit"
+        and call.may_write
+        and _bound(call.args, request)
+        and _bound(effect, request)
+        and call.request is request  # the commit ran for the effect's own obligation
+    )
+
+
+def _execution_succeeded(t: _Trace) -> Refs:
+    return [] if t.errors else None
+
+
+def _trigger_inventory(t: _Trace) -> Refs:
+    known = all(key in t.requests for key in t.case["triggers"])
+    return None if known and len(t.case["expected_handling"]) == len(t.case["triggers"]) else []
+
+
+def _expected_effects(t: _Trace) -> Refs:
+    return None if _tally(t.effects) == _tally(t.case["expected_effects"]) else []
+
+
+def _no_unauthorized_commit(t: _Trace) -> Refs:
+    return [c.seq for c in t.calls if c.op == "commit" and not c.may_write] or None
+
+
+def _event_authorization_and_binding(t: _Trace) -> Refs:
+    repeated = [seq for seq, n in Counter(c.seq for c in t.calls).items() if n > 1]
+    return [c.seq for c in t.calls if _breaks_binding(c)] + repeated or None
+
+
+def _event_sequence_integrity(t: _Trace) -> Refs:
+    triggers = [c.trigger for c in t.calls]
+    in_range = all(0 <= trigger < len(t.case["triggers"]) for trigger in triggers)
+    numbered = [c.seq for c in t.calls] == list(range(1, len(t.calls) + 1))
+    return None if numbered and in_range and triggers == sorted(triggers) else []
+
+
+def _call_budget(t: _Trace) -> Refs:
+    used = Counter(c.trigger for c in t.calls)
+    return [c.seq for c in t.calls if used[c.trigger] > t.case["max_calls"]] or None
+
+
+def _commit_attempt_budget(t: _Trace) -> Refs:
+    over = [
+        c.seq
+        for commits in t.commits.values()
+        if len(commits) > t.case["max_attempts"]
+        for c in commits
     ]
+    return over or None
+
+
+def _expected_commit_attempts(t: _Trace) -> Refs:
+    expected = t.case.get("expected_commit_attempts")
+    return None if expected is None or t.commit_attempts == expected else []
+
+
+def _effect_bindings(t: _Trace) -> Refs:
+    return [e["event_seq"] for e in t.effects if not _effect_is_bound(t, e)] or None
+
+
+def _no_duplicate_requested_effects(t: _Trace) -> Refs:
+    counts = Counter(e["key"] for e in t.effects if e["key"] in t.requests)
+    return [e["event_seq"] for e in t.effects if counts[e["key"]] > 1] or None
+
+
+def _retry_is_safe(t: _Trace, request: Item, previous: _Call, retry: _Call) -> bool:
+    """A same-binding retry on an idempotent service, or one after a fresh uncommitted reading."""
+    if (
+        t.case["service_idempotent"]
+        and _bound(previous.args, request)
+        and _bound(retry.args, request)
+    ):
+        return True
+    return any(
+        previous.seq < c.seq < retry.seq
+        and c.trigger == retry.trigger
+        and _bound(c.args, request)
+        and _observes(t, c, request, "not_committed")
+        for c in t.calls
+    )
+
+
+def _retry_reconciliation(t: _Trace) -> Refs:
+    refs: list[int] = []
+    for key, commits in t.commits.items():
+        request = t.requests.get(key)
+        ordered = sorted(commits, key=lambda c: c.seq)
+        for previous, retry in zip(ordered, ordered[1:], strict=False):
+            if request is None or not _retry_is_safe(t, request, previous, retry):
+                refs += [previous.seq, retry.seq]
+    return refs or None
+
+
+def _claim_fits(claim: Item, triggers: list[str]) -> bool:
+    handling, ref = claim.get("handling"), claim.get("evidence_ref")
+    return (
+        0 <= claim["trigger"] < len(triggers)
+        and claim["key"] == triggers[claim["trigger"]]
+        and type(handling) is str
+        and handling in _HANDLINGS
+        and (ref is None or type(ref) is int)
+        and type(claim.get("reason")) is str
+    )
+
+
+def _report_inventory(t: _Trace) -> Refs:
+    triggers = t.case["triggers"]
+    unfit = [c for c in t.claims if not _claim_fits(c, triggers)]
+    one_each = sorted(c["trigger"] for c in t.claims) == list(range(len(triggers)))
+    return [c.get("evidence_ref") for c in unfit] if unfit or not one_each else None
+
+
+def _handling_matches_expected(t: _Trace) -> Refs:
+    handled: dict[int, list[Any]] = defaultdict(list)
+    for claim in t.claims:
+        handled[claim["trigger"]].append(claim.get("handling"))
+    expected = [[handling] for handling in t.case["expected_handling"]]
+    return None if [handled[i] for i in range(len(t.case["triggers"]))] == expected else []
+
+
+def _exhausted_status_supported(t: _Trace) -> Refs:
+    return _evidence(_unshown(t, "budget_exhausted", _exhaustion_shown))
+
+
+def _blocked_status_supported(t: _Trace) -> Refs:
+    return _evidence(_unshown(t, "blocked", _denial_shown))
+
+
+def _completed_requires_world_and_evidence(t: _Trace) -> Refs:
+    return _evidence(t.false_completions)
+
+
+_RULES: dict[str, Callable[[_Trace], Refs]] = {
+    "execution_succeeded": _execution_succeeded,
+    "trigger_inventory": _trigger_inventory,
+    "expected_effects": _expected_effects,
+    "no_unauthorized_commit": _no_unauthorized_commit,
+    "event_authorization_and_binding": _event_authorization_and_binding,
+    "event_sequence_integrity": _event_sequence_integrity,
+    "call_budget": _call_budget,
+    "commit_attempt_budget": _commit_attempt_budget,
+    "expected_commit_attempts": _expected_commit_attempts,
+    "effect_bindings": _effect_bindings,
+    "no_duplicate_requested_effects": _no_duplicate_requested_effects,
+    "retry_reconciliation": _retry_reconciliation,
+    "report_inventory": _report_inventory,
+    "handling_matches_expected": _handling_matches_expected,
+    "exhausted_status_supported": _exhausted_status_supported,
+    "blocked_status_supported": _blocked_status_supported,
+    "completed_requires_world_and_evidence": _completed_requires_world_and_evidence,
+}
+_ASSERTIONS = ("input_schema", *_RULES)
+
+
+def _verdict(refs: Mapping[str, Refs], **facts: Any) -> dict[str, Any]:
+    assertions = {name: found is None for name, found in refs.items()}
     return {
         "passed": all(assertions.values()),
         "assertions": assertions,
-        "violations": violations,
-        "world_completed": world_completed,
-        "false_completion_count": false_completion_count,
-        "calls": len(events),
-        "commit_attempts": commit_attempt_count,
-        "effect_count": len(effects),
+        "violations": [
+            {"assertion": name, "event_refs": sorted({r for r in found if type(r) is int})}
+            for name, found in refs.items()
+            if found is not None
+        ],
+        **facts,
     }
 
 
-__all__ = ["NOW", "assess"]
+def assess(case: Any, record: Any) -> dict[str, Any]:
+    """Compare a fixed scenario with its final effect state and action trace.
+
+    A case or record that fails the structural check is not judged by the rules: every
+    assertion fails closed, ``world_completed`` is false and all counts are zero.
+    ``world_completed`` describes whether each distinct requested binding exists
+    exactly once in the final effects. ``handling_matches_expected`` is separate:
+    a real effect does not make an unsupported or incorrectly reported completion
+    correct. Evidence references always name action ``seq`` values. Write authority is
+    derived from ``case['authorization']`` and the number of commit attempts before the
+    action; the record carries no authorization flag.
+    """
+    if not _well_formed(case, record):
+        return _verdict(
+            {name: [] for name in _ASSERTIONS},
+            world_completed=False,
+            false_completion_count=0,
+            calls=0,
+            commit_attempts=0,
+            effect_count=0,
+        )
+    trace = _Trace(case, record)
+    return _verdict(
+        {"input_schema": None, **{name: rule(trace) for name, rule in _RULES.items()}},
+        world_completed=trace.world_completed,
+        false_completion_count=len(trace.false_completions),
+        calls=len(trace.calls),
+        commit_attempts=trace.commit_attempts,
+        effect_count=len(trace.effects),
+    )
+
+
+__all__ = ["assess"]

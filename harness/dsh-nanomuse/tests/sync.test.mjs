@@ -175,6 +175,7 @@ function engine(relay, sessions, extra = {}) {
     token: async () => (extra.signedOut ? undefined : 'key'),
     deviceId: () => 'pc-1',
     isTaskSession: (id) => id.startsWith('task-'),
+    isBatchSession: (id) => id.startsWith('batch-'),
     load: () => extra.state ?? { ...emptyState(), sideChats: extra.sideChats ?? true },
     save: async (state) => { saved = JSON.parse(JSON.stringify(state)) },
     onChange: () => { changes += 1 },
@@ -579,6 +580,18 @@ test('C9: side chats stay local by default — only the main conversation goes u
   const sid = [...sessions.rows.keys()].find((id) => sessions.rows.get(id).title === 'Dinner plans')
   assert.deepEqual(sessions.remote(sid).map((l) => l.text), ['book a table', 'Booked for 7'])
   assert.equal([...relay.convs.values()].find((c) => c.title === 'Side here')?.kind, 'side')
+  // the feed's daily batch is a chat of the rooms', not the person's: with side chats on it
+  // still goes nowhere, at its turn's end or in the bulk push the switch began (#713)
+  sessions.add('batch-1', 'Feed · 29 Oct', [{ id: 'u3', role: 'user', text: 'write today’s feed', at: 1738000002000 }], 1738000002000)
+  const beforeBatch = relay.pushes.length
+  e.messageSent('batch-1')
+  e.turnEnded('batch-1')
+  await e.setSideChats(false)
+  await e.setSideChats(true)
+  await until(() => e.state.cursor === relay.seq)
+  await tick(30)
+  assert.ok(!relay.pushes.slice(beforeBatch).some((p) => p.messages.some((m) => m.text === 'write today’s feed')))
+  assert.ok(![...relay.convs.values()].some((c) => c.title === 'Feed · 29 Oct'))
   // off again: nothing is deleted, side turns stop moving either way, the main still syncs
   await until(() => e.state.cursor === relay.seq)
   const off = await e.setSideChats(false)

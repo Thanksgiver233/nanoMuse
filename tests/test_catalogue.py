@@ -9,10 +9,10 @@ from nanomuse.llm import catalogue
 from nanomuse.llm.factory import create_llm
 
 
-def test_the_packaged_file_is_read_once_and_has_the_twenty_four_providers():
+def test_the_packaged_file_is_read_once_and_has_the_twenty_five_providers():
     cat = catalogue.load()
     assert cat.source.endswith("providers.json")
-    assert len(cat.providers) == 24
+    assert len(cat.providers) == 25
     assert cat.get("bailian").capabilities == ["chat", "vision", "image", "video"]
     assert cat.get("nowhere") is None
     # the same object on every call
@@ -63,6 +63,29 @@ def test_opper_uses_openai_chat_without_advertising_unverified_capabilities():
     assert settings.endpoint == provider.base_url
     assert settings.model == "claude-sonnet-4-6"
     assert LLMSettings(provider="opper", model="gpt-5.4-mini").model == "gpt-5.4-mini"
+
+
+def test_atmorouter_uses_openai_chat_without_advertising_unverified_capabilities():
+    cat = catalogue.load()
+    provider = cat.get("atmorouter")
+    assert provider is not None
+    assert provider.auth == ["key"]
+    assert provider.key_url == "https://atmorouter.dev/dashboard/keys"
+    assert provider.capabilities == ["chat"]
+    assert provider.defaults == {"chat": "cc/claude-sonnet-4-6"}
+    assert provider in cat.providers_for("chat", "global")
+    for capability in ("vision", "image", "video"):
+        assert provider not in cat.providers_for(capability, "global")
+    assert check_provider("atmorouter") == "atmorouter"
+    assert resolve_provider("atmorouter", None) == (
+        "openai",
+        "https://atmorouter.dev/v1",
+    )
+    settings = LLMSettings(provider="atmorouter")
+    assert settings.protocol == "openai"
+    assert settings.endpoint == provider.base_url
+    assert settings.model == "cc/claude-sonnet-4-6"
+    assert LLMSettings(provider="atmorouter", model="zai/glm-5.3").model == "zai/glm-5.3"
 
 
 def test_providers_for_a_capability_in_a_region_keeps_the_catalogue_order():

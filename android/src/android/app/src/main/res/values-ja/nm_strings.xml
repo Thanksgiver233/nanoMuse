@@ -1212,4 +1212,13 @@
     <string name="nm_stop_reason_done">もう終わっていた</string>
     <string name="nm_stop_reason_other">その他</string>
     <string name="nm_feed_limit_notice">1日の上限（12件）のため、生成された投稿%1$d件を追加できませんでした。</string>
+
+    <!-- Context maintenance -->
+    <string name="nm_context_compacting">会話のコンテキストを短くしています（推定 %1$d / %2$d トークン）。</string>
+    <string name="nm_context_compact_deferred">コンテキストを短くできませんでした。モデルの上限内なので処理を続けます。</string>
+    <string name="nm_context_limit_reached">コンテキストがモデルの上限に近づいており、短くできませんでした。圧縮を再試行するか、新しいチャットを始めてください。</string>
+    <string name="nm_context_compact_timeout">コンテキストの圧縮が %1$d 秒でタイムアウトしました（モデル呼び出し %2$d 回）。</string>
+    <string name="nm_context_compact_idle_timeout">%1$d 秒間応答がなかったため、コンテキストの圧縮を停止しました（モデル呼び出し %2$d 回）。</string>
+    <string name="nm_context_compact_no_gain">要約でコンテキストが短くならなかったため、元の内容を保持しました。</string>
+    <string name="nm_context_compact_incomplete">モデルから完全な要約が返されなかったため、元のコンテキストを保持しました。</string>
 </resources>

@@ -1217,4 +1217,13 @@
     <string name="nm_stop_reason_done">Já estava pronto</string>
     <string name="nm_stop_reason_other">Outra coisa</string>
     <string name="nm_feed_limit_notice">%1$d postagens geradas não couberam devido ao limite diário de 12.</string>
+
+    <!-- Context maintenance -->
+    <string name="nm_context_compacting">Reduzindo o contexto (estimativa: %1$d / %2$d tokens).</string>
+    <string name="nm_context_compact_deferred">Não foi possível reduzir o contexto. O processamento continua porque ele ainda cabe na janela do modelo.</string>
+    <string name="nm_context_limit_reached">O contexto está perto do limite do modelo e não pôde ser reduzido. Tente reduzi-lo novamente ou inicie uma nova conversa.</string>
+    <string name="nm_context_compact_timeout">A redução do contexto excedeu o tempo limite de %1$d segundos (%2$d chamadas ao modelo).</string>
+    <string name="nm_context_compact_idle_timeout">A compactação parou após %1$d segundos sem resposta (%2$d chamadas ao modelo).</string>
+    <string name="nm_context_compact_no_gain">O resumo não reduziu o contexto. O conteúdo original foi mantido.</string>
+    <string name="nm_context_compact_incomplete">O modelo não retornou um resumo completo. O contexto original foi mantido.</string>
 </resources>

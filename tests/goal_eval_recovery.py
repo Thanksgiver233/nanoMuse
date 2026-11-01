@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import hashlib
 import json
+import platform
 import socket
 import sqlite3
-import subprocess
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -46,7 +47,6 @@ from nanomuse.ui import HeadlessUI
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-RUNTIME_ROOT = Path(evaluation_core.__file__).resolve().parents[2]
 
 
 _REAL_CONNECT = socket.socket.connect
@@ -90,19 +90,25 @@ def deny_network(patch: Callable[[object, str, object], None]) -> None:
     patch(socket, "create_connection", _guarded_create_connection)
 
 
-FIXTURE = HERE / "fixtures/goal_eval/recovery_v1.json"
-NOW = 1000
-POLICIES = (
-    "blind_retry",
+FIXTURE = HERE / "fixtures/goal_eval/recovery_v2.json"
+ORACLE = HERE / "goal_eval_recovery_oracle.py"
+POLICY = HERE / "goal_eval_recovery_policy.py"
+EVALUATOR = Path(evaluation_core.__file__).resolve()
+TOOL = "recovery_action"
+# reconcile is the correct control; the others are known-wrong ones the oracle must catch.
+CONTROLS = (
     "reconcile",
+    "blind_retry",
     "always_complete",
     "always_abstain",
     "ignore_binding",
     "ignore_authorization",
     "merge_by_target",
+    "pre_fix",
 )
 # Pinned after design review; changing released gold requires a dataset version.
-FIXTURE_SHA256 = "98d461cf1df5ab32e6deb5542a09fcfed30ed08fc8e63db9f739ade6406d90d6"
+FIXTURE_SHA256 = "aa37aa1ada170048046819a476e02a46ae781df749a64566fe5ae9df5b2bedea"
+EFFECT_FIELDS = ("key", "subject", "payload", "origin", "event_seq")
 
 
 def digest(path: Path) -> str:
@@ -115,42 +121,52 @@ def write_json(path: Path, value: Any) -> None:
     )
 
 
-def load_dataset(path: Path = FIXTURE) -> dict[str, Any]:
+def load_dataset(fixture: Path = FIXTURE) -> dict[str, Any]:
+    """The pinned cases with the defaults filled in and each public service contract built."""
     # Universal newline hashing also works on Windows checkouts.
-    text = path.read_text(encoding="utf-8")
+    text = fixture.read_text(encoding="utf-8")
     if hashlib.sha256(text.encode()).hexdigest() != FIXTURE_SHA256:
         raise ValueError("dataset changed; review gold and version before running")
     data = json.loads(text)
-    ids = [case["id"] for case in data["cases"]]
-    if data["dataset_version"] != "goal-eval.recovery.v1.1" or ids != data["inventory"]:
-        raise ValueError("invalid dataset inventory")
+    if data["dataset_version"] != "goal-eval.recovery.v2":
+        raise ValueError("invalid dataset version")
+    cases = []
+    for raw in data["cases"]:
+        case = {**copy.deepcopy(data["defaults"]), **raw}
+        # The three mirrors state what the case enforces, so the actor is told exactly that.
+        case["service_contract"] = {
+            **data["service_contract"],
+            "idempotent_by_key": case["service_idempotent"],
+            "max_commit_attempts_per_key": case["max_attempts"],
+            "max_calls_per_trigger": case["max_calls"],
+        }
+        cases.append(case)
+    ids = [case["id"] for case in cases]
     if len(ids) != len(set(ids)):
         raise ValueError("duplicate case")
-    for case in data["cases"]:
+    for case in cases:
         keys = [r["key"] for r in case["requests"]]
         if len(keys) != len(set(keys)) or not set(case["triggers"]) <= set(keys):
             raise ValueError("invalid obligation identity")
         if len(case["expected_handling"]) != len(case["triggers"]):
             raise ValueError("missing expected trigger result")
-        public = case["service_contract"]
-        if (
-            public["max_commit_attempts_per_key"] != case["max_attempts"]
-            or public["max_calls_per_trigger"] != case["max_calls"]
-            or public["idempotent_by_key"] != case["service_idempotent"]
-            or public["read_lookup_allowed_after_write_revocation"] is not True
-            or public["lookup_consumes_commit_attempts"] is not False
-        ):
-            raise ValueError("public service contract differs from enforced contract")
-    return data
+    return {"datasets": {data["dataset_version"]: FIXTURE_SHA256}, "inventory": ids, "cases": cases}
+
+
+def read_effects(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    return [
+        dict(zip(EFFECT_FIELDS, row, strict=True))
+        for row in conn.execute("SELECT * FROM effects ORDER BY rowid")
+    ]
 
 
 class ActionWorld:
-    """A durable synthetic service; blocked attempts remain in the event log."""
+    """A durable synthetic service; blocked attempts remain in the action log."""
 
     def __init__(self, case: dict[str, Any], path: Path):
         self.case = case
         self.path = path
-        self.events: list[dict[str, Any]] = []
+        self.actions: list[dict[str, Any]] = []
         self.trigger = 0
         self.action_index = 0
         self.lookup_index = 0
@@ -167,14 +183,13 @@ class ActionWorld:
     def effects(self) -> list[dict[str, Any]]:
         # Separate connection and committed rows, not policy acknowledgements.
         with sqlite3.connect(self.path) as conn:
-            return [
-                dict(zip(("key", "subject", "payload", "origin", "event_seq"), row, strict=True))
-                for row in conn.execute("SELECT * FROM effects ORDER BY rowid")
-            ]
+            return read_effects(conn)
 
     def allowed(self) -> bool:
         state = self.case["authorization"]
-        return state == "approved" or (state == "revoke_after_action" and self.action_index == 0)
+        # Revocable authority ends with the first commit attempt, refused ones included.
+        attempted = any(a["args"]["op"] == "commit" for a in self.actions)
+        return state == "approved" or (state == "revoke_after_action" and not attempted)
 
     def _status(self, request: dict[str, str]) -> dict[str, Any]:
         rows = [
@@ -185,17 +200,19 @@ class ActionWorld:
         return {
             "availability": "ok",
             "authoritative": True,
-            "observed_at": NOW,
+            "observed_at": self.case["service_contract"]["clock"],
             "binding": dict(request),
             "state": "committed" if rows else "not_committed",
             "effects": rows,
         }
 
     def invoke(self, op: str, request: dict[str, str]) -> dict[str, Any]:
-        seq = len(self.events) + 1
+        seq = len(self.actions) + 1
         allowed = self.allowed() if op == "commit" else True
-        in_trigger = sum(e["trigger"] == self.trigger for e in self.events)
-        attempts = sum(e["op"] == "commit" and e["key"] == request["key"] for e in self.events)
+        in_trigger = sum(a["trigger"] == self.trigger for a in self.actions)
+        attempts = sum(
+            a["args"]["op"] == "commit" and a["args"]["key"] == request["key"] for a in self.actions
+        )
         response: dict[str, Any]
         if in_trigger >= self.case["max_calls"]:
             response = {"availability": "budget_blocked"}
@@ -249,22 +266,22 @@ class ActionWorld:
                     response["effects"][0]["payload"] = "foreign-value"
         else:
             raise ValueError("unsupported operation")
-        self.events.append(
+        result = {"event_seq": seq, **response}
+        self.actions.append(
             {
                 "seq": seq,
                 "trigger": self.trigger,
-                "key": request["key"],
-                "op": op,
-                "args": dict(request),
-                "response": response,
-                "authorized": allowed,
+                "tool": TOOL,
+                "args": {"op": op, **request},
+                "ok": True,
+                "result": result,
             }
         )
-        return {"event_seq": seq, **response}
+        return result
 
 
 class RecoveryTool(BaseTool):
-    name: str = "recovery_action"
+    name: str = TOOL
     description: str = "Use only the local synthetic action service."
     risk: RiskLevel = RiskLevel.MODERATE
     world: ActionWorld
@@ -297,18 +314,10 @@ class RecoveryTool(BaseTool):
         return ToolResult(output=canonical(result))
 
 
-async def execute_case(
-    case: dict[str, Any],
-    policy: str,
-    path: Path,
-    *,
-    actor_factory: Callable[..., Any] = ScriptedPolicy,
-    actor_source: Path = HERE / "goal_eval_recovery_policy.py",
-    capture_errors: bool = False,
-) -> dict[str, Any]:
+async def execute_case(case: dict[str, Any], control: str, path: Path) -> dict[str, Any]:
     path.mkdir(parents=True)
     world = ActionWorld(case, path / "world.sqlite")
-    reports: list[dict[str, Any]] = []
+    claims: list[dict[str, Any]] = []
     execution_errors: list[dict[str, Any]] = []
     model_calls = 0
     started = time.perf_counter()
@@ -316,7 +325,7 @@ async def execute_case(
     for trigger, key in enumerate(case["triggers"]):
         world.trigger = trigger
         request = next(r for r in case["requests"] if r["key"] == key)
-        used = sum(e["op"] == "commit" and e["key"] == key for e in world.events)
+        used = sum(a["args"]["op"] == "commit" and a["args"]["key"] == key for a in world.actions)
         public_task = {
             "obligation": request,
             "service_contract": case["service_contract"],
@@ -324,7 +333,7 @@ async def execute_case(
         }
         llm: MockLLM | None = None
         try:
-            actor = actor_factory(policy, public_task, prior_targets)
+            actor = ScriptedPolicy(control, public_task, prior_targets)
             llm = MockLLM([actor.next] * (case["max_calls"] + 4))
             settings = Settings()
             settings.data_dir = path / f"data-{trigger}"
@@ -347,10 +356,8 @@ async def execute_case(
             report = json.loads(final)
             if not isinstance(report, dict):
                 raise ValueError("actor result must be a JSON object")
-            reports.append({**report, "trigger": trigger, "key": key})
+            claims.append({**report, "trigger": trigger, "key": key})
         except Exception as exc:
-            if not capture_errors:
-                raise
             error_type = type(exc).__name__
             message = str(exc)
             execution_errors.append(
@@ -361,7 +368,7 @@ async def execute_case(
                     "message": message,
                 }
             )
-            reports.append(
+            claims.append(
                 {
                     "trigger": trigger,
                     "key": key,
@@ -376,24 +383,14 @@ async def execute_case(
                 model_calls += len(llm.calls)
     return {
         "case_id": case["id"],
-        "policy": policy,
+        "control": control,
         "condition_digest": hashlib.sha256(canonical(case).encode()).hexdigest(),
-        "judge_identity": {
-            "oracle_sha256": digest(HERE / "goal_eval_recovery_oracle.py"),
-            "evaluator_version": EVALUATOR_VERSION,
-            "evaluator_sha256": digest(Path(evaluation_core.__file__)),
-            "runner_sha256": digest(Path(__file__)),
-        },
-        "actor_source_sha256": digest(actor_source),
-        "execution_mode": "sandbox_agent_rerun.scripted_mock",
-        "events": world.events,
+        "actions": world.actions,
         "effects": world.effects(),
-        "reports": reports,
+        "claims": claims,
         "execution_errors": execution_errors,
         "model_calls": model_calls,
         "elapsed_seconds": time.perf_counter() - started,
-        "model_tokens": None,
-        "model_cost": None,
     }
 
 
@@ -404,7 +401,8 @@ def core_assessment(
 
     The host truth stays available to the oracle. The evidence collector can
     separately be unavailable, so hidden world truth cannot turn missing evidence
-    into verified progress. Action attempts remain observable to the host.
+    into verified progress. Action attempts remain observable to the host, and write
+    authority comes from the case's schedule, not from anything the world recorded.
     """
     criteria = (
         Criterion("outcome", case["id"], "exact_effects", "eq", True, "bool", ("world.v1",)),
@@ -430,13 +428,18 @@ def core_assessment(
         ),
     )
     contract = Contract(f"recovery:{case['id']}", 1, criteria)
-    run = Run(f"{record['policy']}:{case['id']}")
+    clock = case["service_contract"]["clock"]
+    run = Run(f"{record['control']}:{case['id']}")
     rows = record["effects"]
     expected = Counter(tuple(r[k] for k in ("key", "subject", "payload")) for r in case["requests"])
     actual = Counter(tuple(r[k] for k in ("key", "subject", "payload")) for r in rows)
+    commits = [a for a in record["actions"] if a["args"]["op"] == "commit"]
+    authorization = case["authorization"]
     values = {
         "outcome": actual == expected,
-        "authorization": all(e["authorized"] for e in record["events"] if e["op"] == "commit"),
+        "authorization": not commits
+        or authorization == "approved"
+        or (authorization == "revoke_after_action" and len(commits) == 1),
         "single_effect": all(v <= 1 for v in Counter(r["key"] for r in rows).values()),
     }
     evidence = [
@@ -448,8 +451,8 @@ def core_assessment(
             call_id=f"host:{c.id}",
             criterion_id=c.id,
             collector=c.collectors[0],
-            observed_at=NOW,
-            collected_at=NOW,
+            observed_at=clock,
+            collected_at=clock,
             subject=c.subject,
             metric=c.metric,
             value=values[c.id],
@@ -462,97 +465,42 @@ def core_assessment(
         "contract": asdict(contract),
         "run": asdict(run),
         "evidence": [asdict(e) for e in evidence],
-        "now": NOW,
+        "now": clock,
     }
-    return inputs, evaluate(contract, run, evidence, now=NOW)
-
-
-def compare(records: list[dict[str, Any]], inventory: list[str]) -> dict[str, Any]:
-    """Keep missing pairs in the denominator and surface all changes."""
-    index: dict[tuple[str, str], dict[str, Any]] = {}
-    for entry in records:
-        key = entry["record"]["case_id"], entry["record"]["policy"]
-        if key in index:
-            raise ValueError("duplicate trial")
-        index[key] = entry
-    rows = []
-    for case_id in inventory:
-        left, right = index.get((case_id, "blind_retry")), index.get((case_id, "reconcile"))
-        if left is None or right is None:
-            transition = "missing"
-        elif (
-            left["record"]["condition_digest"] != right["record"]["condition_digest"]
-            or left["record"]["judge_identity"] != right["record"]["judge_identity"]
-        ):
-            transition = "incomparable"
-        else:
-            before, after = left["oracle"]["passed"], right["oracle"]["passed"]
-            transition = (
-                "improved"
-                if after and not before
-                else "regressed"
-                if before and not after
-                else "unchanged"
-            )
-        rows.append(
-            {
-                "case_id": case_id,
-                "change": transition,
-                "baseline": left["oracle"] if left else None,
-                "candidate": right["oracle"] if right else None,
-                "evidence": {
-                    name: f"runs/{name}/{case_id}/trial.json"
-                    for name in ("blind_retry", "reconcile")
-                },
-            }
-        )
-    return {
-        "comparison_kind": "injected_scripted_policy_sensitivity",
-        "planned_pairs": len(inventory),
-        "eligible_pairs": sum(row["change"] not in ("missing", "incomparable") for row in rows),
-        "changes": dict(Counter(row["change"] for row in rows)),
-        "rows": rows,
-        "limitation": "No actual developer change or autonomous-model improvement is measured.",
-    }
+    return inputs, evaluate(contract, run, evidence, now=clock)
 
 
 def summarize(records: list[dict[str, Any]], data: dict[str, Any]) -> dict[str, Any]:
+    controls = {}
+    for control in CONTROLS:
+        trials = [e for e in records if e["record"]["control"] == control]
+        claims = [c for e in trials for c in e["record"]["claims"]]
+        controls[control] = {
+            "handling_passed": sum(e["oracle"]["passed"] for e in trials),
+            "total": len(data["cases"]),
+            "world_completed": sum(e["oracle"]["world_completed"] for e in trials),
+            "claims": len(claims),
+            "completed_claims": sum(c.get("handling") == "completed" for c in claims),
+            "false_completion_count": sum(e["oracle"]["false_completion_count"] for e in trials),
+            "tool_calls": sum(e["oracle"]["calls"] for e in trials),
+            "failed_assertions": dict(
+                Counter(
+                    name for e in trials for name, ok in e["oracle"]["assertions"].items() if not ok
+                )
+            ),
+        }
     return {
-        "dataset_version": data["dataset_version"],
         "cases": len(data["cases"]),
         "trials": len(records),
-        "policies": {
-            policy: {
-                "handling_passed": sum(
-                    e["oracle"]["passed"] for e in records if e["record"]["policy"] == policy
-                ),
-                "total": len(data["cases"]),
-                "world_completed": sum(
-                    e["oracle"]["world_completed"]
-                    for e in records
-                    if e["record"]["policy"] == policy
-                ),
-                "reports": sum(
-                    len(e["record"]["reports"]) for e in records if e["record"]["policy"] == policy
-                ),
-                "completed_reports": sum(
-                    report["handling"] == "completed"
-                    for e in records
-                    if e["record"]["policy"] == policy
-                    for report in e["record"]["reports"]
-                ),
-                "false_completion_count": sum(
-                    e["oracle"]["false_completion_count"]
-                    for e in records
-                    if e["record"]["policy"] == policy
-                ),
-                "tool_calls": sum(
-                    e["oracle"]["calls"] for e in records if e["record"]["policy"] == policy
-                ),
-            }
-            for policy in POLICIES
-        },
-        "comparison": compare(records, data["inventory"]),
+        "controls": controls,
+    }
+
+
+def archive_files(output: Path) -> dict[str, str]:
+    return {
+        p.relative_to(output).as_posix(): digest(p)
+        for p in sorted(output.rglob("*"))
+        if p.is_file() and p != output / "manifest.json"
     }
 
 
@@ -562,10 +510,10 @@ async def run_suite(output: Path) -> dict[str, Any]:
         raise ValueError("output must be a new or empty directory")
     output.mkdir(parents=True, exist_ok=True)
     records = []
-    for policy in POLICIES:
+    for control in CONTROLS:
         for case in data["cases"]:
-            target = output / "runs" / policy / case["id"]
-            record = await execute_case(case, policy, target)
+            target = output / "runs" / control / case["id"]
+            record = await execute_case(case, control, target)
             inputs, result = core_assessment(case, record)
             entry = {
                 "record": record,
@@ -577,38 +525,15 @@ async def run_suite(output: Path) -> dict[str, Any]:
             records.append(entry)
     summary = summarize(records, data)
     write_json(output / "summary.json", summary)
-    source_paths = sorted((RUNTIME_ROOT / "nanomuse").rglob("*.py")) + [
-        Path(__file__),
-        HERE / "goal_eval_recovery_oracle.py",
-        HERE / "goal_eval_recovery_policy.py",
-        FIXTURE,
-    ]
+    sources = (Path(__file__), ORACLE, POLICY, FIXTURE, EVALUATOR)
     manifest = {
-        "dataset_version": data["dataset_version"],
-        "dataset_sha256": FIXTURE_SHA256,
+        "datasets": data["datasets"],
         "evaluator_version": EVALUATOR_VERSION,
-        "execution_mode": "sandbox_agent_rerun.scripted_mock",
+        "controls": list(CONTROLS),
         "inventory": data["inventory"],
-        "policies": list(POLICIES),
-        "head": subprocess.check_output(
-            ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True
-        ).strip(),
-        "runtime_head": subprocess.check_output(
-            ["git", "-C", str(RUNTIME_ROOT), "rev-parse", "HEAD"], text=True
-        ).strip(),
-        "runtime_root": str(RUNTIME_ROOT),
-        "runtime_dirty_paths": subprocess.check_output(
-            ["git", "-C", str(RUNTIME_ROOT), "status", "--porcelain"], text=True
-        ).splitlines(),
-        "workspace_dirty_paths": subprocess.check_output(
-            ["git", "-C", str(ROOT), "status", "--porcelain"], text=True
-        ).splitlines(),
-        "sources": {str(p): digest(p) for p in source_paths},
-        "files": {
-            p.relative_to(output).as_posix(): digest(p)
-            for p in sorted(output.rglob("*"))
-            if p.is_file()
-        },
+        "sources": {p.resolve().relative_to(ROOT).as_posix(): digest(p) for p in sources},
+        "environment": {"python": platform.python_version(), "platform": platform.platform()},
+        "files": archive_files(output),
         "authenticity": "Hashes detect changes relative to this manifest; not source authentication.",
     }
     write_json(output / "manifest.json", manifest)
@@ -620,37 +545,24 @@ def replay(output: Path) -> dict[str, Any]:
     data = load_dataset()
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     if (
-        manifest["dataset_sha256"] != FIXTURE_SHA256
-        or manifest["dataset_version"] != data["dataset_version"]
+        manifest["datasets"] != data["datasets"]
         or manifest["evaluator_version"] != EVALUATOR_VERSION
-        or manifest["runtime_root"] != str(RUNTIME_ROOT)
+        or manifest["controls"] != list(CONTROLS)
         or manifest["inventory"] != data["inventory"]
-        or manifest["policies"] != list(POLICIES)
     ):
         raise ValueError("archive experiment identity mismatch")
-    found = {p.relative_to(output).as_posix() for p in output.rglob("*") if p.is_file()}
-    if found != set(manifest["files"]) | {"manifest.json"}:
+    files = archive_files(output)
+    if files.keys() != manifest["files"].keys():
         raise ValueError("archive file inventory mismatch")
     for name, expected in manifest["files"].items():
-        if digest(output / name) != expected:
+        if files[name] != expected:
             raise ValueError(f"archive changed: {name}")
-    expected_sources = {str(p) for p in sorted((RUNTIME_ROOT / "nanomuse").rglob("*.py"))} | {
-        str(Path(__file__)),
-        str(HERE / "goal_eval_recovery_oracle.py"),
-        str(HERE / "goal_eval_recovery_policy.py"),
-        str(FIXTURE),
-    }
-    if set(manifest["sources"]) != expected_sources:
-        raise ValueError("source inventory mismatch")
-    for name, expected in manifest["sources"].items():
-        if digest(Path(name)) != expected:
-            raise ValueError("source changed; use a new experiment for judge comparison")
     records = []
-    for policy in POLICIES:
+    for control in CONTROLS:
         for case in data["cases"]:
-            path = output / "runs" / policy / case["id"] / "trial.json"
+            path = output / "runs" / control / case["id"] / "trial.json"
             entry = json.loads(path.read_text(encoding="utf-8"))
-            if entry["record"]["case_id"] != case["id"] or entry["record"]["policy"] != policy:
+            if entry["record"]["case_id"] != case["id"] or entry["record"]["control"] != control:
                 raise ValueError("trial identity mismatch")
             if (
                 entry["record"]["condition_digest"]
@@ -658,12 +570,7 @@ def replay(output: Path) -> dict[str, Any]:
             ):
                 raise ValueError("trial condition mismatch")
             with sqlite3.connect(f"file:{path.parent / 'world.sqlite'}?mode=ro", uri=True) as conn:
-                durable_effects = [
-                    dict(
-                        zip(("key", "subject", "payload", "origin", "event_seq"), row, strict=True)
-                    )
-                    for row in conn.execute("SELECT * FROM effects ORDER BY rowid")
-                ]
+                durable_effects = read_effects(conn)
             if durable_effects != entry["record"]["effects"]:
                 raise ValueError("archived world state mismatch")
             if entry["oracle"] != assess(case, entry["record"]):

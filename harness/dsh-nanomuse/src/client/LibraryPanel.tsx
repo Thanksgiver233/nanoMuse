@@ -3,12 +3,14 @@
  * (search; Artifacts: all, documents, web; Media: images, videos, podcasts;
  * System files at the bottom) beside a grid of cards with a preview and
  * "kind · when". Create opens a chat where the agent makes a new document,
- * page, video or episode and presents the file; a card opens the viewer —
+ * page, video or episode and presents the file; the menu beside it starts a
+ * blank Markdown document in the editor or imports Markdown and text files
+ * from disk into the Library folder (#689); a card opens the viewer —
  * Markdown rendered and editable in place, pictures, video and audio played,
  * a web page framed — with Open (the system app) and Reveal.
  */
 import { failureText } from './api.ts'
-import { createElement as h, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { createElement as h, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import type { Translate } from './api.ts'
 import { IconCheck, IconChevronLeft, IconDoc, IconExternal, IconFile, IconFilter, IconFolder, IconGlobe, IconImage, IconPencil, IconPlus, IconSearch, IconShapes, IconTrash, IconVideo, IconWave } from './icons.tsx'
 import type { Words } from './locales.ts'
@@ -32,6 +34,9 @@ const MEDIA: typeof SHELVES = [
 ]
 /** Text files open in the markdown editor; the rest in the viewer. */
 const EDITABLE = /\.(md|markdown|txt)$/i
+/** What Import takes for now (the host's `IMPORT_KINDS`), and the most one file may hold (the editor's limit). */
+const IMPORT_ACCEPT = '.md,.markdown,.txt'
+const IMPORT_MAX_BYTES = 2 * 1024 * 1024
 
 const KIND_WORD: Record<LibraryKind, Words> = { document: 'kindDocument', web: 'kindWeb', image: 'kindImage', video: 'kindVideo', audio: 'kindAudio', file: 'kindFile' }
 const KIND_ICON: Record<LibraryKind, (p: { size: number }) => ReactNode> = { document: IconDoc, web: IconGlobe, image: IconImage, video: IconVideo, audio: IconWave, file: IconFile }
@@ -52,6 +57,8 @@ export function makeLibraryPanel(t: Translate) {
     const [openId, setOpenId] = useState<string | undefined>()
     const [creating, setCreating] = useState(false)
     const [error, setError] = useState<string | undefined>()
+    const [notice, setNotice] = useState<string | undefined>()
+    const picker = useRef<HTMLInputElement | null>(null)
     const current = [...SHELVES, ...MEDIA].find((s) => s.id === shelf) ?? SHELVES[0]!
     const open = rooms.library.find((i) => i.id === openId)
 
@@ -90,6 +97,40 @@ export function makeLibraryPanel(t: Translate) {
         .catch(fail)
         .finally(() => setCreating(false))
     }
+    // a blank Markdown file of the person's own, written in the editor (no chat, no model)
+    const blank = () => {
+      if (creating) return
+      setCreating(true)
+      setError(undefined)
+      roomsCall<{ item: LibraryItem }>('library/new', {})
+        .then(({ item }) => show(item))
+        .catch(fail)
+        .finally(() => setCreating(false))
+    }
+    // files from disk: each one's text goes to the host, which writes it under the Library folder;
+    // one file opens in the editor, several are left on the shelf; what was skipped is said
+    const importFiles = async (files: File[]) => {
+      if (files.length === 0) return
+      setCreating(true)
+      setError(undefined)
+      setNotice(undefined)
+      const skipped: string[] = []
+      const added: LibraryItem[] = []
+      for (const file of files) {
+        if (!/\.(md|markdown|txt)$/i.test(file.name)) { skipped.push(t('libImportSkipped', { name: file.name, why: t('libImportKind') })); continue }
+        if (file.size > IMPORT_MAX_BYTES) { skipped.push(t('libImportSkipped', { name: file.name, why: t('libImportTooLarge') })); continue }
+        try {
+          const { item } = await roomsCall<{ item: LibraryItem }>('library/import', { name: file.name, text: await file.text() })
+          added.push(item)
+        } catch (err: unknown) {
+          skipped.push(t('libImportSkipped', { name: file.name, why: failureText(t, err) }))
+        }
+      }
+      setCreating(false)
+      if (skipped.length) setError(skipped.join('\n'))
+      if (added.length === 1 && files.length === 1) show(added[0]!)
+      else if (added.length) { setNotice(t('libImported', { n: added.length })); if (shelf !== 'all' && shelf !== 'document') setShelf('document') }
+    }
 
     if (open) return h(Viewer, { t, item: open, lang: rooms.lang, onBack: () => setOpenId(undefined), onOpen: () => openSystem(open), onReveal: () => openSystem(open, true), onRemove: () => { setOpenId(undefined); roomsCall('library/delete', { id: open.id }).catch(fail) }, onFail: fail })
 
@@ -117,7 +158,15 @@ export function makeLibraryPanel(t: Translate) {
         ] }),
         current.create
           ? h('button', { type: 'button', className: 'nm-pill nm-pill-sm', disabled: !rooms.ready || creating, onClick: create }, h(IconPlus, { size: 15 }), ' ', t(current.create))
-          : null))
+          : null,
+        // the person's own documents need no model: a blank file, or files brought in from disk
+        shelf === 'all' || shelf === 'document'
+          ? h(MoreButton, { label: t('libMoreWays'), size: 36, items: [
+              { id: 'blank', label: t('libNewDocument'), icon: h(IconDoc, { size: 15 }), onSelect: blank },
+              { id: 'import', label: t('libImportFiles'), icon: h(IconFolder, { size: 15 }), onSelect: () => picker.current?.click() },
+            ] })
+          : null,
+        h('input', { ref: picker, type: 'file', accept: IMPORT_ACCEPT, multiple: true, hidden: true, onChange: (e: FormEvent<HTMLInputElement>) => { const files = Array.from(e.currentTarget.files ?? []); e.currentTarget.value = ''; void importFiles(files) } })))
 
     const card = (item: LibraryItem) => h(Card, { key: item.id, t, item, selecting, selected: selected.has(item.id), onClick: () => (selecting ? toggle(item.id) : show(item)), onOpen: () => openSystem(item), onReveal: () => openSystem(item, true), onRemove: () => { roomsCall('library/delete', { id: item.id }).catch(fail) } })
     // "Recent" (the last few touched) over "All generated content", as Muse lays the shelf out
@@ -136,7 +185,10 @@ export function makeLibraryPanel(t: Translate) {
       h('div', { className: 'nm-lib-main' },
         h('div', { className: 'nm-room-top', 'data-window-drag': true }),
         head,
-        h('div', { className: 'nm-room-body' }, h('div', { className: 'nm-room-inner nm-lib-inner' }, error ? h('div', { className: 'nm-room-error' }, error) : null, grid))))
+        h('div', { className: 'nm-room-body' }, h('div', { className: 'nm-room-inner nm-lib-inner' },
+          error ? h('div', { className: 'nm-room-error', style: { whiteSpace: 'pre-line' } }, error) : null,
+          notice ? h('div', { className: 'nm-room-notice' }, notice) : null,
+          grid))))
   }
 }
 
@@ -225,7 +277,8 @@ function Viewer({ t, item, lang, onBack, onOpen, onReveal, onRemove, onFail }: {
       h('button', { type: 'button', className: 'nm-pill nm-pill-ghost nm-pill-sm', onClick: onOpen }, h(IconExternal, { size: 14 }), ' ', t('libOpen')),
       h(MoreButton, { label: t('more'), size: 30, items: [
         { id: 'reveal', label: t('libReveal'), icon: h(IconFolder, { size: 15 }), onSelect: onReveal },
-        { id: 'chat', label: t('libOpenChat'), onSelect: () => { if (item.sessionId) { nav.openSession(item.sessionId); nav.split(LIBRARY_PANEL) } } },
+        // a file the person made or brought in themselves came from no chat
+        ...(item.sessionId ? [{ id: 'chat', label: t('libOpenChat'), onSelect: () => { nav.openSession(item.sessionId); nav.split(LIBRARY_PANEL) } }] : []),
         'sep',
         { id: 'remove', label: t('libRemove'), icon: h(IconTrash, { size: 15 }), danger: true, onSelect: onRemove },
       ] })),

@@ -496,6 +496,24 @@
       "verified": "2026-10"
     },
     {
+      "id": "atmorouter",
+      "name": "AtmoRouter",
+      "name_zh": "AtmoRouter",
+      "protocol": "openai",
+      "base_url": "https://atmorouter.dev/v1",
+      "key_url": "https://atmorouter.dev/dashboard/keys",
+      "key_hint": "ar-…",
+      "auth": ["key"],
+      "regions": ["global"],
+      "capabilities": ["chat"],
+      "defaults": {
+        "chat": "cc/claude-sonnet-4-6"
+      },
+      "note": "A pay-as-you-go OpenAI-compatible gateway with one key for models from several labs (Claude, GPT, Gemini, DeepSeek, GLM, Kimi, Qwen, MiniMax and others). Model ids carry a route prefix, as its /v1/models list names them. Chat only here, on the OpenAI shape: the default model is cc/claude-sonnet-4-6, and any id from that list can be set instead.",
+      "note_zh": "按用量付费的 OpenAI 兼容网关，一把 key 用多个厂商的模型（Claude、GPT、Gemini、DeepSeek、GLM、Kimi、Qwen、MiniMax 等）。模型 id 带线路前缀，以它的 /v1/models 列表为准。这里只有对话，走 OpenAI 格式：默认模型是 cc/claude-sonnet-4-6，也可以改填这个列表里的任意模型 id。",
+      "verified": "2026-10"
+    },
+    {
       "id": "ollama",
       "name": "Ollama",
       "name_zh": "Ollama（本机）",

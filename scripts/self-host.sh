@@ -264,7 +264,7 @@ if [ -n "$GENERATED_ADMIN" ]; then
 else
   say "            password: the CLOUD_ADMIN_TOKEN line in cloud/.env"
 fi
-[ "$SENDER" = log ] && say "  Codes     ${COMPOSE[*]} ${FILES[*]} logs relay    (sign-in codes are printed there)"
+[ "$SENDER" = log ] && say "  Codes     cd cloud && ${COMPOSE[*]} ${FILES[*]} logs relay    (sign-in codes are printed there)"
 say
 say "Point each app at $BASE: on Android and iPhone, tap \"Use a different server\" on the"
 say "sign-in screen; on the desktop, set the plugin's baseURL in cordis.patch.yml; for the"

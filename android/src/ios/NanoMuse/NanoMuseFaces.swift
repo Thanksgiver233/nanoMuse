@@ -542,7 +542,7 @@ final class NanoMuseClipPlayers {
         if var entry = entries[key] {
             entry.users += 1
             entries[key] = entry
-            if !suspended { entry.player.play() }
+            if !suspended { start(entry.player) }
             return entry.player
         }
         let player = AVQueuePlayer()
@@ -551,8 +551,19 @@ final class NanoMuseClipPlayers {
         player.allowsExternalPlayback = false
         let looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: url))
         entries[key] = Entry(player: player, looper: looper, users: 1)
-        if !suspended { player.play() }
+        if !suspended { start(player) }
         return player
+    }
+
+    /// Muted is not silent to the system: a playing player starts the app's audio session, and
+    /// in the default category that stops whatever music the person has on. Make the session
+    /// mixable first, then play, unless the clip was let go or the app left the front meanwhile.
+    private func start(_ player: AVQueuePlayer) {
+        AudioSessionCoordinator.shared.whenIdleMixable { [weak self] in
+            guard let self, !self.suspended,
+                  self.entries.values.contains(where: { $0.player === player }) else { return }
+            player.play()
+        }
     }
 
     func release(_ url: URL, version: Int) {
@@ -572,7 +583,7 @@ final class NanoMuseClipPlayers {
         guard suspend != suspended else { return }
         suspended = suspend
         for entry in entries.values {
-            if suspend { entry.player.pause() } else { entry.player.play() }
+            if suspend { entry.player.pause() } else { start(entry.player) }
         }
     }
 }

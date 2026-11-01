@@ -1216,4 +1216,13 @@
     <string name="nm_stop_reason_done">Zaten bitmişti</string>
     <string name="nm_stop_reason_other">Başka bir şey</string>
     <string name="nm_feed_limit_notice">Günlük 12 sınırı nedeniyle oluşturulan %1$d gönderi eklenemedi.</string>
+
+    <!-- Context maintenance -->
+    <string name="nm_context_compacting">Bağlam kısaltılıyor (tahmini %1$d / %2$d token).</string>
+    <string name="nm_context_compact_deferred">Bağlam kısaltılamadı. Hâlâ modelin bağlam penceresine sığdığı için işleme devam ediliyor.</string>
+    <string name="nm_context_limit_reached">Bağlam model sınırına yaklaştı ve kısaltılamadı. Kısaltmayı yeniden deneyin veya yeni bir sohbet başlatın.</string>
+    <string name="nm_context_compact_timeout">Bağlamı kısaltma işlemi %1$d saniye sonra zaman aşımına uğradı (%2$d model çağrısı).</string>
+    <string name="nm_context_compact_idle_timeout">Sıkıştırma, %1$d saniye yanıt alınamadığı için durduruldu (%2$d model çağrısı).</string>
+    <string name="nm_context_compact_no_gain">Özet bağlamı kısaltmadı. Orijinal içerik korundu.</string>
+    <string name="nm_context_compact_incomplete">Model eksiksiz bir özet döndürmedi. Orijinal bağlam korundu.</string>
 </resources>

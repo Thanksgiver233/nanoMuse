@@ -1220,4 +1220,13 @@
     <string name="nm_stop_reason_done">Era deja gata</string>
     <string name="nm_stop_reason_other">Altceva</string>
     <string name="nm_feed_limit_notice">%1$d postări generate nu au încăput din cauza limitei zilnice de 12.</string>
+
+    <!-- Context maintenance -->
+    <string name="nm_context_compacting">Se reduce contextul (estimare: %1$d / %2$d tokenuri).</string>
+    <string name="nm_context_compact_deferred">Contextul nu a putut fi redus. Procesarea continuă deoarece încă încape în fereastra modelului.</string>
+    <string name="nm_context_limit_reached">Contextul este aproape de limita modelului și nu a putut fi redus. Încearcă din nou reducerea sau începe o conversație nouă.</string>
+    <string name="nm_context_compact_timeout">Reducerea contextului a depășit timpul de așteptare după %1$d secunde (%2$d apeluri către model).</string>
+    <string name="nm_context_compact_idle_timeout">Comprimarea s-a oprit după %1$d secunde fără răspuns (%2$d apeluri către model).</string>
+    <string name="nm_context_compact_no_gain">Rezumatul nu a redus contextul. Conținutul original a fost păstrat.</string>
+    <string name="nm_context_compact_incomplete">Modelul nu a returnat un rezumat complet. Contextul original a fost păstrat.</string>
 </resources>

@@ -142,6 +142,15 @@ test('under prefers-reduced-motion every breathing light is steady', () => {
   assert.match(steady, /animation: none; opacity: 1;/)
 })
 
+test('a folded thinking row in the fit-content agent bubble keeps a width (#683)', () => {
+  const bubble = 'html[data-nm-muse] [data-chat-flow-kind="assistant-step"] [data-slot="conversation.chat.node"] > [class*="_root"] > [class*="_body"]'
+  assert.match(rule(bubble), /width:\s*fit-content/)
+  // the harness folds the row with `contain: size`, which sizes it as if empty: 0 wide in that bubble
+  const think = rule(`${bubble} [data-variant="think"]:not([data-expanded])`)
+  assert.match(think, /contain:\s*layout;/)
+  assert.doesNotMatch(think, /size/)
+})
+
 test('in the Muse look the chat is monochrome: ink pills, grey agent pills, the send disc the same ink', () => {
   // the token blocks span several lines
   const block = (selector) => {

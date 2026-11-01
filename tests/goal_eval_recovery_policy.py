@@ -11,11 +11,14 @@ from typing import Any
 from nanomuse.goals.evaluation import canonical
 from nanomuse.schema import Function, LLMResponse, Message, ToolCall
 
-NOW = 1000
-
 
 class ScriptedPolicy:
-    """Known controls over observable tool results, not model reasoning."""
+    """Known controls over observable tool results, not model reasoning.
+
+    ``pre_fix`` is ``reconcile`` before two fixes: it reports "completed" for any bound
+    commit receipt without comparing its content, and it never falls back to an
+    idempotent write when readback is pending or unavailable.
+    """
 
     def __init__(
         self,
@@ -27,6 +30,7 @@ class ScriptedPolicy:
         self.request = dict(public_task["obligation"])
         self.max_calls = public_task["service_contract"]["max_calls_per_trigger"]
         self.idempotent = public_task["service_contract"]["idempotent_by_key"]
+        self.clock = public_task["service_contract"]["clock"]
         self.attempts_left = (
             public_task["service_contract"]["max_commit_attempts_per_key"]
             - public_task["prior_commit_attempts"]
@@ -65,7 +69,7 @@ class ScriptedPolicy:
         return (
             data.get("availability") == "ok"
             and data.get("authoritative") is True
-            and data.get("observed_at") == NOW
+            and data.get("observed_at") == self.clock
             and data.get("binding") == self.request
         )
 
@@ -83,7 +87,9 @@ class ScriptedPolicy:
         data = json.loads(latest.content or "{}")
         if self.stage == "commit" and self.valid_status(data):
             self.evidence_ref = data["event_seq"]
-            if data.get("state") == "committed" and data.get("effects") == [self.request]:
+            if self.name == "pre_fix" or (
+                data.get("state") == "committed" and data.get("effects") == [self.request]
+            ):
                 return self.finish("completed", "Commit receipt")
             return self.finish("conflict", "Commit receipt conflicts with requested content")
         if data.get("availability") in ("denied", "budget_blocked", "attempt_budget_blocked"):
@@ -130,7 +136,7 @@ class ScriptedPolicy:
             if data.get("availability") in ("pending", "unavailable"):
                 # Native same-obligation idempotency permits a safe write even
                 # when readback is unavailable. Authorization is still checked.
-                if self.idempotent and self.attempts_left > 0:
+                if self.idempotent and self.attempts_left > 0 and self.name != "pre_fix":
                     self.ready_to_commit = True
                     return self.call("permission")
                 return self.call("lookup")

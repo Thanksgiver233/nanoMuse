@@ -147,6 +147,35 @@ def test_make_ics_round_trips():
     assert all(len(line.encode()) <= 75 for line in make_ics("x" * 200, start, start).split("\r\n"))
 
 
+def test_a_long_chinese_line_folds_without_cutting_a_character():
+    """RFC 5545 §3.1: a content line is at most 75 octets and the rest continues on the next
+    one after a single space. Chinese is three octets a character, so the 74th octet is
+    almost never a character boundary: the fold has to step back rather than cut one in
+    half, and unfolding has to give the line back exactly as it was escaped."""
+    summary = "季度绩效沟通会: 目标回顾, 新目标与衡量方式; 请提前十分钟到场，带上本季度的项目进展"
+    location = "上海南京西路 1266 号 3 楼大会议室"
+    note = (
+        "第一行：把上季度的三个目标逐条过一遍。\n第二行：新的目标要能衡量。\n第三行：带上笔记本。"
+    )
+    start = datetime(2026, 10, 8, 15, 0, tzinfo=TZ)
+    text = make_ics(summary, start, start + timedelta(hours=1), location=location, description=note)
+
+    physical = text.split("\r\n")
+    assert all(len(line.encode()) <= 75 for line in physical), "no physical line is over 75 octets"
+    # the text ends in CRLF, and every continuation is one more physical line
+    folded = [line for line in physical if line.startswith(" ")]
+    assert len(folded) >= 2, "the long summary and the three-line note each continue"
+
+    # folding and unfolding compose: the logical lines come back byte for byte
+    lines = unfold(text)
+    assert len(lines) == len(physical) - 1 - len(folded)
+    escaped = summary.replace(";", "\\;").replace(",", "\\,")
+    assert next(line for line in lines if line.startswith("SUMMARY:")) == "SUMMARY:" + escaped
+
+    [ev] = parse_ics(text, TZ)
+    assert ev.summary == summary and ev.location == location and ev.description == note
+
+
 def settings_for(*urls: str, enabled: bool = True) -> CalendarSettings:
     return CalendarSettings(
         enabled=enabled,

@@ -115,13 +115,19 @@ speaking as nanoMuse through the `nanomuse` preset, with:
 - **the rooms**: Feed, Ideas, Goals and Library as the phone has them, kept by the host in
   `nanomuse/rooms.json` and written by the agent in hidden chats (feed and ideas) or
   chats of their own (goals, with the harness's schedule plugin for their automations;
-  Library creations under `~/nanoMuse/Library`), plus memory: what it remembers about
+  Library creations under `~/nanoMuse/Library`; every chat the plugin opens, for the person,
+  for a batch of its own or for a task another device sent, starts in the `~/nanoMuse`
+  workspace, never in the bare home folder — on Windows a workspace that is the whole profile
+  folder cannot run a `workspace-write` command at all, since the sandbox's temp root lies
+  inside it, [#705](https://github.com/nano-muse/nanoMuse/issues/705)), plus memory: what it remembers about
   you, read into every chat ([desktop-muse.md](desktop-muse.md#rail-rooms));
 - **Reach**: this computer on the account's device list over the [hub](hub.md); the
   tools `devices`, `device_screen`, `device_shell`, `device_files`, `device_open`,
   `device_notify` and `delegate` for the phone and the other computers; the phone's
   `delegate` landing here as a dsh session "From <device>" with its approvals relayed
-  back, and its text sent while the model writes it when the asker asks (`stream`); remote control (`shell`, `files`, `open`, `screen`) behind a switch;
+  back, and its text sent while the model writes it when the asker asks (`stream`); a
+  task for a conversation whose chat was archived since the last one brings the chat back,
+  as opening it and typing does; remote control (`shell`, `files`, `open`, `screen`) behind a switch;
 - **Coding agents**: *Settings → Coding agents*, with this computer's Cursor, Codex,
   Claude Code and DeepSeek Harness chats (read from disk, a message starts the agent's own
   CLI, the run streams in with its tools, *Stop* ends it) and then the account's other computers',
@@ -172,8 +178,12 @@ speaking as nanoMuse through the `nanomuse` preset, with:
 - **Each model call tells the account's record where it sat** (relay 0.31). The harness's
   model adapter sends a provider's headers the same on every request, and a call's
   provenance changes with each, so the `nanoMuse Cloud` provider row points at a loopback
-  door of the plugin's own (`http://127.0.0.1:<port>/v1`; the port is each start's, and the
-  row is pointed at it again at start). The door sends a request on only when it carries the
+  door of the plugin's own (`http://127.0.0.1:<port>/v1`). The door asks for the port it had
+  at the last start (kept in the plugin's state as `doorPort`), so the row is right as it is;
+  when that port is taken, or the row was written by 1.0.7 and names the relay itself, the row
+  is pointed at today's door once the Host is up — not while the plugins are still starting,
+  where waiting for the write held the Host before it announced its address (1.0.8, #701).
+  The door sends a request on only when it carries the
   account's own key (anything else is a 401 here, as it would be at the relay), with the
   device, the platform (`X-NanoMuse-Platform: desktop`) and what the `llm/stream` hook
   announced for that call: who started the turn (`X-NanoMuse-Run`: `person`, `schedule`,
@@ -314,6 +324,21 @@ last good settings, and a damaged file is replaced from the copy at the next sta
 are readable by the owner alone, as the proxy address may carry a password. *Download your
 agent data* writes its zip one file at a time, leaves out links and anything over 64 MB,
 and removes a password from the proxy address in the `desktop.json` it packs.
+
+## The agent's desktop guide
+
+The nanoMuse preset includes a `nanomuse-desktop` skill. Its description appears in the
+native DeepSeek Harness skill catalog; the `skill` tool loads its full guide only when
+needed. Ask how to connect a second-brain folder or configure a desktop capability, and
+the agent has local instructions for the current desktop instead of searching app source.
+The guide covers settings, workspaces, permissions, connectors and MCP, skills, memory,
+and rooms, with the current workspace and harness-home paths supplied by the host.
+
+For a folder you want every chat to find, the guide explains how to keep a pointer in
+the workspace's `AGENTS.md`, or in `$DSH_HOME/AGENTS.md` across workspaces. It does not
+copy the folder or grant access: writes outside a chat's workspace still need approval,
+including when reached through a Windows junction or a symlink. Credential entry and
+settings without an agent-facing tool stay in their existing settings pages.
 
 ## Models
 
@@ -531,7 +556,10 @@ More to know:
 - Screen Recording reaches freshly started processes only; that process is the helper. When
   the switch flips while the app runs, the app restarts the helper by itself (the log says
   `restarting the helper for the new grant`); the *Restart* button on the Permissions page
-  restarts the helper too, never the app, and two clicks are one restart.
+  restarts the helper too, never the app, and two clicks are one restart. If the helper is
+  still starting, the restart waits for that process and replaces it. The button shows
+  *Restarting…* until the replacement answers, reports a failed restart, and clears the
+  old black-screen notice only after success. A fresh test screenshot checks the grant.
 - The picture is the main display, at most 2 Mpx (a 3456×2234 Retina panel comes down to
   1758×1137), coordinates in points. Only the main display is captured and driven. Holding a
   key across actions (`press` / `release`, UI-TARS's names) works since 0.1.39.

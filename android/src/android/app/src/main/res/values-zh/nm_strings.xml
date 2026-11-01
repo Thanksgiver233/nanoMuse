@@ -1189,4 +1189,13 @@
     <string name="nm_stop_reason_done">已经做完了</string>
     <string name="nm_stop_reason_other">其他原因</string>
     <string name="nm_feed_limit_notice">因每日 12 条上限，有 %1$d 条生成内容未能加入动态。</string>
+
+    <!-- Context maintenance -->
+    <string name="nm_context_compacting">正在整理对话上下文（估算 %1$d / %2$d token）。</string>
+    <string name="nm_context_compact_deferred">暂时没能缩短上下文，仍在模型容量范围内，继续处理。</string>
+    <string name="nm_context_limit_reached">上下文已接近模型容量上限，暂时无法缩短。请重试压缩，或新建对话。</string>
+    <string name="nm_context_compact_timeout">整理上下文在 %1$d 秒后超时（调用模型 %2$d 次）。</string>
+    <string name="nm_context_compact_idle_timeout">模型连续 %1$d 秒未返回数据，已停止整理上下文（调用模型 %2$d 次）。</string>
+    <string name="nm_context_compact_no_gain">摘要未缩短上下文，已保留原有内容。</string>
+    <string name="nm_context_compact_incomplete">模型未返回完整摘要，已保留原有上下文。</string>
 </resources>

@@ -990,9 +990,7 @@ function registerBridge(): void {
   // macOS applies Screen Recording only to freshly started processes: after granting it, the
   // process that takes the screenshots has to start again — the helper when it is in use,
   // the whole app otherwise.
-  ipcMain.handle("nanomuse:relaunch", () => {
-    relaunchNow();
-  });
+  ipcMain.handle("nanomuse:relaunch", () => relaunchNow());
   ipcMain.handle("nanomuse:updates:snapshot", () => windowsUpdates?.snapshot() ?? null);
   ipcMain.handle("nanomuse:updates:auto-download", async (_e, enabled: boolean) => {
     await windowsUpdates?.setAutoDownload(enabled);
@@ -1716,23 +1714,25 @@ let relaunching = false;
  * `nanomuse mcp` — started before the permission was granted, and so still without it —
  * does not outlive the relaunch.
  */
-function relaunchNow(): void {
+async function relaunchNow(): Promise<boolean> {
   // with a helper bundle the helper is what restarts — also while it is between two processes
   // or failed to start (then this is the retry); in 0.1.38 a restart that found the helper
   // "not running" fell through here and relaunched the whole app, twice when clicked twice
   if (helper()?.present()) {
     log("permissions: restarting the helper for the new grant");
-    void macHelper?.restart();
-    return;
+    const restarted = await macHelper?.restart();
+    if (!restarted) throw new Error(macHelper?.failure() || "the helper could not restart");
+    return true;
   }
-  if (relaunching) return;
-  if (!exitGuard) return;
-  void exitGuard.requestRestart("relaunch", () => {
+  if (relaunching) return true;
+  if (!exitGuard) return false;
+  return exitGuard.requestRestart("relaunch", () => {
     relaunching = true;
     app.relaunch();
     app.quit();
   }, true).then((accepted) => {
     if (!accepted) relaunching = false;
+    return accepted;
   });
 }
 
@@ -1779,7 +1779,7 @@ function watchScreenGrant(): void {
         cancelId: 1,
       })
       .then(({ response }) => {
-        if (response === 0) relaunchNow();
+        if (response === 0) return relaunchNow();
       })
       .catch(() => undefined);
   }, 1500);

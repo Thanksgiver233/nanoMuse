@@ -53,6 +53,18 @@ test('Opper is offered for own-key chat without unverified media capabilities', 
   }
 })
 
+test('AtmoRouter is offered for own-key chat without unverified media capabilities', () => {
+  const provider = catalogue.find((p) => p.id === 'atmorouter')
+  assert.ok(provider)
+  assert.equal(baseUrlFor(provider, 'global'), 'https://atmorouter.dev/v1')
+  assert.equal(provider.defaults.chat, 'cc/claude-sonnet-4-6')
+  assert.deepEqual(capabilitiesForAuth(provider, 'key'), ['chat'])
+  assert.ok(waysOn(catalogue, 'global').rest.some((p) => p.id === 'atmorouter'))
+  for (const capability of ['vision', 'image', 'video']) {
+    assert.ok(!providersWith(catalogue, capability, 'global').some((p) => p.id === 'atmorouter'))
+  }
+})
+
 test('loadCatalogue reads the asset next to lib/ and gives an empty list for a missing file', async () => {
   assert.ok((await loadCatalogue()).length >= 15)
   assert.deepEqual(await loadCatalogue('/nonexistent/providers.json'), [])

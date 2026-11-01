@@ -546,6 +546,8 @@ export interface SyncEngineOptions {
   deviceId(): string
   /** Sessions that are another device's tasks (`task.ts`) are not synced: they are that device's conversation. */
   isTaskSession?(sessionId: string): boolean
+  /** A chat the rooms ran for themselves (the feed's daily batch): the agent's workbench, never synced. */
+  isBatchSession?(sessionId: string): boolean
   load(): SyncState | undefined
   save(state: SyncState): Promise<void>
   /** The view changed: tell the browser half. */
@@ -948,9 +950,10 @@ export class SyncEngine {
     return Object.values(this.state.pulled).includes(sessionId)
   }
 
-  /** Whether a session's turns go up: not another device's task, not another account's (C10), and a side chat only when the switch is on (C9). */
+  /** Whether a session's turns go up: not another device's task, not a batch of the rooms', not another account's (C10), and a side chat only when the switch is on (C9). */
   private syncs(sessionId: string): boolean {
     if (this.options.isTaskSession?.(sessionId)) return false
+    if (this.options.isBatchSession?.(sessionId)) return false
     if (!this.owns(sessionId)) return false
     return this.state.sideChats || sessionId === this.state.mainSession
   }

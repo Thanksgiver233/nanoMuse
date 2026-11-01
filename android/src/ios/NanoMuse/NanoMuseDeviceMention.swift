@@ -129,8 +129,15 @@ enum NanoMuseDeviceMention {
                         Task { @MainActor in live.apply(body) }
                     }
                 }
-                var answer = (reply["text"] as? String) ?? (reply["answer"] as? String) ?? ""
-                if answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { answer = AppLocalized("Done") }
+                var answer = ((reply["text"] as? String) ?? (reply["answer"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                // Nothing came back: a task that did not run (a chat that refused the step, #718),
+                // or one whose Muse ended it without a word. "Done" here read as work that had
+                // happened; the steps above say what did happen, and this line says the answer did not come.
+                if answer.isEmpty {
+                    let reason = String(format: AppLocalized("%@ finished without an answer."), device.name)
+                    await live.finish(header: nil, answer: reason, replacing: false, completion: .failed(reason))
+                    return
+                }
                 if notes.declined > 0 {
                     answer += "\n\n" + String(format: AppLocalized("%@ asked for permission for a step and did not get it from here."), device.name)
                 }
@@ -142,6 +149,8 @@ enum NanoMuseDeviceMention {
                 if live.stopped {
                     await live.finish(header: nil, answer: AppLocalized("Stopped."), replacing: false, completion: .stopped)
                 } else {
+                    // A failed call can have completed earlier steps. Describe the failure without
+                    // claiming the task never started; an empty answer must not read as "Done".
                     let reason = NanoMuseHubErrors.describe(error)
                     await live.finish(header: nil, answer: String(format: AppLocalized("%@ did not answer: %@"), device.name, reason), replacing: false, completion: .failed(reason))
                 }

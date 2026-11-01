@@ -1196,4 +1196,13 @@
     <string name="nm_stop_reason_done">It was already done</string>
     <string name="nm_stop_reason_other">Something else</string>
     <string name="nm_feed_limit_notice">%1$d of today\'s posts did not fit; the feed takes 12 a day</string>
+
+    <!-- Context maintenance -->
+    <string name="nm_context_compacting">Preparing a shorter context (estimated %1$d / %2$d tokens).</string>
+    <string name="nm_context_compact_deferred">The context could not be shortened. Continuing because it still fits the model window.</string>
+    <string name="nm_context_limit_reached">The context is near the model limit and could not be shortened. Try compacting again or start a new chat.</string>
+    <string name="nm_context_compact_timeout">Compaction timed out after %1$d seconds (%2$d model calls).</string>
+    <string name="nm_context_compact_idle_timeout">Compaction stopped after %1$d seconds without a response (%2$d model calls).</string>
+    <string name="nm_context_compact_no_gain">The summary did not shorten the context. The original content was kept.</string>
+    <string name="nm_context_compact_incomplete">The model did not return a complete summary. The original context was kept.</string>
 </resources>

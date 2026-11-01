@@ -1212,4 +1212,13 @@
     <string name="nm_stop_reason_done">Sudah selesai</string>
     <string name="nm_stop_reason_other">Hal lain</string>
     <string name="nm_feed_limit_notice">%1$d postingan yang dibuat tidak dimuat karena batas harian 12.</string>
+
+    <!-- Context maintenance -->
+    <string name="nm_context_compacting">Memperpendek konteks (perkiraan %1$d / %2$d token).</string>
+    <string name="nm_context_compact_deferred">Konteks tidak dapat diperpendek. Proses dilanjutkan karena masih muat dalam jendela konteks model.</string>
+    <string name="nm_context_limit_reached">Konteks mendekati batas model dan tidak dapat diperpendek. Coba ringkas lagi atau mulai percakapan baru.</string>
+    <string name="nm_context_compact_timeout">Peringkasan konteks kehabisan waktu setelah %1$d detik (%2$d panggilan model).</string>
+    <string name="nm_context_compact_idle_timeout">Pemadatan berhenti setelah %1$d detik tanpa respons (%2$d panggilan model).</string>
+    <string name="nm_context_compact_no_gain">Ringkasan tidak memperpendek konteks. Konten asli tetap disimpan.</string>
+    <string name="nm_context_compact_incomplete">Model tidak mengembalikan ringkasan lengkap. Konteks asli tetap disimpan.</string>
 </resources>

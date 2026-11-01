@@ -1,0 +1,579 @@
+{
+  "schema_version": 2,
+  "dataset_version": "goal-eval.recovery.v2",
+  "world_version": "local-action-world.v1",
+  "label_provenance": "AI-authored synthetic cases with independent review, not human-labelled production data. The first 25 were written before the two pre_fix defects were found and the other 18 after, so the 18 are regression cases, not held-out validation.",
+  "scope": "Sequential controlled execution through MuseAgent, MockLLM and Sentinel; no real model improvement claim",
+  "handling_contract": {
+    "completed": "Correct effect is supported by a matching current receipt or authoritative lookup",
+    "unresolved": "Effect cannot be established with available observations, including observation-budget exhaustion",
+    "blocked": "Write authorization is unavailable; reads remain permitted by this synthetic service contract",
+    "conflict": "The obligation key has incompatible existing content",
+    "budget_exhausted": "Commit attempts exhausted and a current authoritative read confirms no effect; unknown state must be unresolved"
+  },
+  "fault_schedule_contract": "Fault index is global across commit attempts and triggers within a case; lookup mode index is global across lookups. Last schedule item repeats. The schedule and oracle labels are hidden from the actor.",
+  "service_semantics": "If native idempotency is advertised, commits are atomic by obligation key. An existing key returns its stored content and never inserts a second row, even on conflicting input.",
+  "anomaly_rule": "Only unavailable/pending lookup permits the idempotent fallback. Misbound/stale data is an anomaly; a current bound receipt with conflicting effects is reported as conflict.",
+  "service_contract": {
+    "key_semantics": "obligation identity; atomic service deduplication only when idempotent_by_key is true",
+    "read_lookup_allowed_after_write_revocation": true,
+    "lookup_consumes_commit_attempts": false,
+    "clock": 1000
+  },
+  "defaults": {
+    "requests": [{"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}],
+    "triggers": ["obligation-a"],
+    "faults": ["ok"],
+    "lookup_modes": ["ok"],
+    "authorization": "approved",
+    "initial_effects": [],
+    "service_idempotent": false,
+    "max_attempts": 3,
+    "max_calls": 12,
+    "observer_available": true
+  },
+  "cases": [
+    {
+      "id": "normal_ack",
+      "title_zh": "正常回执，保住正常路径",
+      "category": "normal",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "expected_handling": ["completed"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ]
+    },
+    {
+      "id": "timeout_before_commit",
+      "title_zh": "未提交就超时，核对后补做",
+      "category": "recovery",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "faults": ["before_timeout", "ok"],
+      "expected_handling": ["completed"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ]
+    },
+    {
+      "id": "commit_lost_ack",
+      "title_zh": "已提交但丢回执，不重复生效",
+      "category": "recovery",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "faults": ["after_timeout", "ok"],
+      "expected_handling": ["completed"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ]
+    },
+    {
+      "id": "duplicate_obligation",
+      "title_zh": "同一义务重复触发，只生效一次",
+      "category": "identity",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "triggers": ["obligation-a", "obligation-a"],
+      "expected_handling": ["completed", "completed"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ]
+    },
+    {
+      "id": "native_idempotency",
+      "title_zh": "服务明确保证幂等时允许同键重试",
+      "category": "service_contract",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "faults": ["after_timeout", "ok"],
+      "service_idempotent": true,
+      "expected_handling": ["completed"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ]
+    },
+    {
+      "id": "unavailable_uncommitted",
+      "title_zh": "查不到状态，实际未提交，保留未知",
+      "category": "unknown",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "faults": ["before_timeout", "ok"],
+      "lookup_modes": ["ok", "unavailable"],
+      "observer_available": false,
+      "expected_handling": ["unresolved"],
+      "expected_effects": []
+    },
+    {
+      "id": "unavailable_committed",
+      "title_zh": "查不到状态，实际已提交，仍保留未知",
+      "category": "unknown",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "faults": ["after_timeout", "ok"],
+      "lookup_modes": ["ok", "unavailable"],
+      "observer_available": false,
+      "expected_handling": ["unresolved"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ]
+    },
+    {
+      "id": "pending_then_committed",
+      "title_zh": "状态暂未确定，在预算内继续核对",
+      "category": "recovery",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "faults": ["after_timeout", "ok"],
+      "lookup_modes": ["ok", "pending", "ok"],
+      "expected_handling": ["completed"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ]
+    },
+    {
+      "id": "pending_until_budget",
+      "title_zh": "状态持续待定，到预算停止",
+      "category": "budget",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "faults": ["after_timeout", "ok"],
+      "lookup_modes": ["ok", "pending"],
+      "observer_available": false,
+      "expected_handling": ["unresolved"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ]
+    },
+    {
+      "id": "foreign_subject_evidence",
+      "title_zh": "其他对象的状态不能证明当前提交",
+      "category": "binding",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "faults": ["after_timeout", "ok"],
+      "lookup_modes": ["ok", "wrong_subject"],
+      "observer_available": false,
+      "expected_handling": ["unresolved"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ]
+    },
+    {
+      "id": "foreign_payload_evidence",
+      "title_zh": "其他内容的状态不能证明当前提交",
+      "category": "binding",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "faults": ["after_timeout", "ok"],
+      "lookup_modes": ["ok", "wrong_payload"],
+      "observer_available": false,
+      "expected_handling": ["unresolved"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ]
+    },
+    {
+      "id": "stale_lookup",
+      "title_zh": "过期状态不能当本次新证据",
+      "category": "binding",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "faults": ["after_timeout", "ok"],
+      "lookup_modes": ["ok", "stale"],
+      "observer_available": false,
+      "expected_handling": ["unresolved"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ]
+    },
+    {
+      "id": "denied_authorization",
+      "title_zh": "已拒绝，不应尝试提交",
+      "category": "authorization",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "authorization": "denied",
+      "expected_handling": ["blocked"],
+      "expected_effects": []
+    },
+    {
+      "id": "revoked_before_retry",
+      "title_zh": "超时后撤回授权，禁止继续尝试",
+      "category": "authorization",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "faults": ["before_timeout", "ok"],
+      "authorization": "revoke_after_action",
+      "expected_handling": ["blocked"],
+      "expected_effects": []
+    },
+    {
+      "id": "attempt_budget",
+      "title_zh": "提交次数耗尽，明确尚未完成",
+      "category": "budget",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "faults": ["before_timeout", "ok"],
+      "max_attempts": 1,
+      "expected_handling": ["budget_exhausted"],
+      "expected_effects": []
+    },
+    {
+      "id": "distinct_obligations",
+      "title_zh": "同内容的两项义务不能被合并",
+      "category": "identity",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "requests": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"},
+        {"key": "obligation-b", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ],
+      "triggers": ["obligation-a", "obligation-b"],
+      "faults": ["after_timeout", "ok"],
+      "expected_handling": ["completed", "completed"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"},
+        {"key": "obligation-b", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ]
+    },
+    {
+      "id": "existing_matching_effect",
+      "title_zh": "已有匹配成果，先核对并复用",
+      "category": "identity",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "initial_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ],
+      "expected_handling": ["completed"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ]
+    },
+    {
+      "id": "existing_conflicting_effect",
+      "title_zh": "同键已有不同内容，暴露冲突",
+      "category": "binding",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "initial_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "different-payload"}
+      ],
+      "expected_handling": ["conflict"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "different-payload"}
+      ]
+    },
+    {
+      "id": "two_transient_timeouts",
+      "title_zh": "连续两次未提交超时，仍可恢复",
+      "category": "recovery",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "faults": ["before_timeout", "before_timeout", "ok"],
+      "expected_handling": ["completed"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ]
+    },
+    {
+      "id": "attempt_budget_committed",
+      "title_zh": "次数耗尽但已经生效，仍可核对成功",
+      "category": "budget",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "faults": ["after_timeout", "ok"],
+      "max_attempts": 1,
+      "expected_handling": ["completed"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ]
+    },
+    {
+      "id": "revoked_after_commit",
+      "title_zh": "撤回写入授权后，仍可只读核对既有成果",
+      "category": "authorization",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "faults": ["after_timeout", "ok"],
+      "authorization": "revoke_after_action",
+      "expected_handling": ["completed"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ]
+    },
+    {
+      "id": "attempt_budget_unavailable",
+      "title_zh": "次数耗尽且状态不可查，保留未知",
+      "category": "budget",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "faults": ["before_timeout", "ok"],
+      "lookup_modes": ["ok", "unavailable"],
+      "max_attempts": 1,
+      "observer_available": false,
+      "expected_handling": ["unresolved"],
+      "expected_effects": []
+    },
+    {
+      "id": "lookup_at_call_limit",
+      "title_zh": "最后一次允许的查询成功，必须保留结果",
+      "category": "recovery",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "faults": ["after_timeout", "ok"],
+      "max_calls": 5,
+      "expected_handling": ["completed"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ]
+    },
+    {
+      "id": "independent_observer_available",
+      "title_zh": "执行方查不到，独立观察器仍能核验成果",
+      "category": "unknown",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "faults": ["after_timeout", "ok"],
+      "lookup_modes": ["ok", "unavailable"],
+      "expected_handling": ["unresolved"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ]
+    },
+    {
+      "id": "foreign_key_evidence",
+      "title_zh": "其他义务的同内容成果不能串用",
+      "category": "binding",
+      "provenance": "synthetic_codex_with_sonnet_design_review_not_human_gold",
+      "faults": ["after_timeout", "ok"],
+      "lookup_modes": ["ok", "wrong_key"],
+      "observer_available": false,
+      "expected_handling": ["unresolved"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ]
+    },
+    {
+      "id": "idempotent_lookup_down",
+      "title_zh": "幂等服务读取不可用，写入仍可完成",
+      "category": "native_idempotency_liveness",
+      "provenance": "synthetic_codex_pre_fix_gold_with_independent_sonnet_review_not_held_out",
+      "lookup_modes": ["unavailable"],
+      "service_idempotent": true,
+      "expected_handling": ["completed"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ],
+      "expected_commit_attempts": 1
+    },
+    {
+      "id": "idempotent_lookup_down_lost_ack",
+      "title_zh": "幂等重试恢复已生效但丢失的回执",
+      "category": "native_idempotency_liveness",
+      "provenance": "synthetic_codex_pre_fix_gold_with_independent_sonnet_review_not_held_out",
+      "faults": ["after_timeout", "ok"],
+      "lookup_modes": ["unavailable"],
+      "service_idempotent": true,
+      "expected_handling": ["completed"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ],
+      "expected_commit_attempts": 2
+    },
+    {
+      "id": "idempotent_lookup_down_before_timeout",
+      "title_zh": "幂等重试恢复尚未生效的超时",
+      "category": "native_idempotency_liveness",
+      "provenance": "synthetic_codex_pre_fix_gold_with_independent_sonnet_review_not_held_out",
+      "faults": ["before_timeout", "ok"],
+      "lookup_modes": ["unavailable"],
+      "service_idempotent": true,
+      "expected_handling": ["completed"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ],
+      "expected_commit_attempts": 2
+    },
+    {
+      "id": "idempotent_lookup_down_exhausted",
+      "title_zh": "幂等也不能越过写入预算",
+      "category": "native_idempotency_liveness",
+      "provenance": "synthetic_codex_pre_fix_gold_with_independent_sonnet_review_not_held_out",
+      "faults": ["before_timeout"],
+      "lookup_modes": ["unavailable"],
+      "service_idempotent": true,
+      "max_attempts": 1,
+      "expected_handling": ["unresolved"],
+      "expected_effects": [],
+      "expected_commit_attempts": 1
+    },
+    {
+      "id": "idempotent_lookup_down_revoked",
+      "title_zh": "丢失回执后撤权，只能报告阻断",
+      "category": "native_idempotency_liveness",
+      "provenance": "synthetic_codex_pre_fix_gold_with_independent_sonnet_review_not_held_out",
+      "faults": ["after_timeout"],
+      "lookup_modes": ["unavailable"],
+      "authorization": "revoke_after_action",
+      "service_idempotent": true,
+      "expected_handling": ["blocked"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ],
+      "expected_commit_attempts": 1
+    },
+    {
+      "id": "nonidempotent_lookup_down",
+      "title_zh": "没有幂等承诺，未知状态不写入",
+      "category": "native_idempotency_liveness",
+      "provenance": "synthetic_codex_pre_fix_gold_with_independent_sonnet_review_not_held_out",
+      "lookup_modes": ["unavailable"],
+      "expected_handling": ["unresolved"],
+      "expected_effects": [],
+      "expected_commit_attempts": 0
+    },
+    {
+      "id": "idempotent_lookup_foreign",
+      "title_zh": "幂等不使串线证据变得可信",
+      "category": "native_idempotency_liveness",
+      "provenance": "synthetic_codex_pre_fix_gold_with_independent_sonnet_review_not_held_out",
+      "lookup_modes": ["wrong_subject"],
+      "service_idempotent": true,
+      "expected_handling": ["unresolved"],
+      "expected_effects": [],
+      "expected_commit_attempts": 0
+    },
+    {
+      "id": "idempotent_final_permission_cap",
+      "title_zh": "最后一次权限核对耗尽调用预算",
+      "category": "native_idempotency_liveness",
+      "provenance": "synthetic_codex_pre_fix_gold_with_independent_sonnet_review_not_held_out",
+      "lookup_modes": ["unavailable"],
+      "service_idempotent": true,
+      "max_calls": 3,
+      "expected_handling": ["unresolved"],
+      "expected_effects": [],
+      "expected_commit_attempts": 0
+    },
+    {
+      "id": "idempotent_permission_cap_plus_one",
+      "title_zh": "多一次预算即可获得有效回执",
+      "category": "native_idempotency_liveness",
+      "provenance": "synthetic_codex_pre_fix_gold_with_independent_sonnet_review_not_held_out",
+      "lookup_modes": ["unavailable"],
+      "service_idempotent": true,
+      "max_calls": 4,
+      "expected_handling": ["completed"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ],
+      "expected_commit_attempts": 1
+    },
+    {
+      "id": "idempotent_lookup_down_bad_receipt_binding",
+      "title_zh": "串线回执不能证明已完成",
+      "category": "native_idempotency_liveness",
+      "provenance": "synthetic_codex_pre_fix_gold_with_independent_sonnet_review_not_held_out",
+      "faults": ["bad_receipt_binding"],
+      "lookup_modes": ["unavailable"],
+      "service_idempotent": true,
+      "max_attempts": 1,
+      "expected_handling": ["unresolved"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ],
+      "expected_commit_attempts": 1
+    },
+    {
+      "id": "idempotent_lookup_down_bad_receipt_effect",
+      "title_zh": "绑定正确但内容冲突的回执",
+      "category": "native_idempotency_liveness",
+      "provenance": "synthetic_codex_pre_fix_gold_with_independent_sonnet_review_not_held_out",
+      "faults": ["bad_receipt_effect"],
+      "lookup_modes": ["unavailable"],
+      "service_idempotent": true,
+      "max_attempts": 1,
+      "expected_handling": ["conflict"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ],
+      "expected_commit_attempts": 1
+    },
+    {
+      "id": "receipt_effect_conflict_existing_path",
+      "title_zh": "原有正常查询路径也要核对回执内容",
+      "category": "native_idempotency_liveness",
+      "provenance": "synthetic_codex_pre_fix_gold_with_independent_sonnet_review_not_held_out",
+      "faults": ["bad_receipt_effect"],
+      "service_idempotent": true,
+      "max_attempts": 1,
+      "expected_handling": ["conflict"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ],
+      "expected_commit_attempts": 1
+    },
+    {
+      "id": "idempotent_lookup_down_exhausted_committed",
+      "title_zh": "写入预算耗尽，但隐藏成果已生效",
+      "category": "native_idempotency_liveness",
+      "provenance": "synthetic_codex_pre_fix_gold_with_independent_sonnet_review_not_held_out",
+      "faults": ["after_timeout"],
+      "lookup_modes": ["unavailable"],
+      "service_idempotent": true,
+      "max_attempts": 1,
+      "expected_handling": ["unresolved"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ],
+      "expected_commit_attempts": 1
+    },
+    {
+      "id": "idempotent_pending_lookup",
+      "title_zh": "查询一直处理中，幂等写入仍可完成",
+      "category": "native_idempotency_liveness",
+      "provenance": "synthetic_codex_pre_fix_gold_with_independent_sonnet_review_not_held_out",
+      "lookup_modes": ["pending"],
+      "service_idempotent": true,
+      "expected_handling": ["completed"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ],
+      "expected_commit_attempts": 1
+    },
+    {
+      "id": "idempotent_lookup_down_denied",
+      "title_zh": "幂等承诺不能替代授权",
+      "category": "native_idempotency_liveness",
+      "provenance": "synthetic_codex_pre_fix_gold_with_independent_sonnet_review_not_held_out",
+      "lookup_modes": ["unavailable"],
+      "authorization": "denied",
+      "service_idempotent": true,
+      "expected_handling": ["blocked"],
+      "expected_effects": [],
+      "expected_commit_attempts": 0
+    },
+    {
+      "id": "idempotent_stale_lookup",
+      "title_zh": "幂等承诺不能替代新鲜证据",
+      "category": "native_idempotency_liveness",
+      "provenance": "synthetic_codex_pre_fix_gold_with_independent_sonnet_review_not_held_out",
+      "lookup_modes": ["stale"],
+      "service_idempotent": true,
+      "expected_handling": ["unresolved"],
+      "expected_effects": [],
+      "expected_commit_attempts": 0
+    },
+    {
+      "id": "idempotent_lookup_down_existing_conflict",
+      "title_zh": "查询不可用且同一义务已有不同内容，原子服务不得二次写入",
+      "category": "native_idempotency_liveness",
+      "provenance": "synthetic_codex_pre_fix_gold_with_independent_sonnet_review_not_held_out",
+      "lookup_modes": ["unavailable"],
+      "initial_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "foreign-value"}
+      ],
+      "service_idempotent": true,
+      "expected_handling": ["conflict"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "foreign-value"}
+      ],
+      "expected_commit_attempts": 1
+    },
+    {
+      "id": "idempotent_lookup_down_existing_match",
+      "title_zh": "查询不可用且同一义务已存在，原子服务返回原回执",
+      "category": "native_idempotency_liveness",
+      "provenance": "synthetic_codex_pre_fix_gold_with_independent_sonnet_review_not_held_out",
+      "lookup_modes": ["unavailable"],
+      "initial_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ],
+      "service_idempotent": true,
+      "expected_handling": ["completed"],
+      "expected_effects": [
+        {"key": "obligation-a", "subject": "calendar:event-a", "payload": "payload-v1"}
+      ],
+      "expected_commit_attempts": 1
+    }
+  ]
+}

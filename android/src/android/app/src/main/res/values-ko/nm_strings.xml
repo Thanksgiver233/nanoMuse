@@ -1212,4 +1212,13 @@
     <string name="nm_stop_reason_done">이미 다 됐어요</string>
     <string name="nm_stop_reason_other">기타</string>
     <string name="nm_feed_limit_notice">일일 한도 12개로 인해 생성된 게시물 %1$d개를 추가하지 못했습니다.</string>
+
+    <!-- Context maintenance -->
+    <string name="nm_context_compacting">대화 맥락을 줄이고 있습니다(추정 %1$d / %2$d 토큰).</string>
+    <string name="nm_context_compact_deferred">맥락을 줄이지 못했습니다. 아직 모델 한도 내이므로 계속 진행합니다.</string>
+    <string name="nm_context_limit_reached">맥락이 모델 한도에 가까워졌고 줄이지 못했습니다. 다시 압축하거나 새 채팅을 시작하세요.</string>
+    <string name="nm_context_compact_timeout">맥락 압축이 %1$d초 후 시간 초과되었습니다(모델 호출 %2$d회).</string>
+    <string name="nm_context_compact_idle_timeout">%1$d초 동안 응답이 없어 컨텍스트 압축을 중지했습니다(모델 호출 %2$d회).</string>
+    <string name="nm_context_compact_no_gain">요약으로 컨텍스트가 줄어들지 않아 원래 내용을 유지했습니다.</string>
+    <string name="nm_context_compact_incomplete">모델이 완전한 요약을 반환하지 않아 원래 컨텍스트를 유지했습니다.</string>
 </resources>

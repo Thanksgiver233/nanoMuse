@@ -38,7 +38,6 @@ import type {} from '@deepseek-ai/dsh-settings'
 import type { ToolDispatchExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import { createUserMessage, type ContentBlock, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, SessionId, AgentCancelCause } from '@deepseek-ai/dsh-session'
-import type { SessionCreateRequest } from '@deepseek-ai/dsh-api-session-controller/types'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
@@ -50,6 +49,7 @@ import { helloLlm, HubClient, HubError, type Caller, type HubDevice, type Incomi
 import { ProfileStore, type Profile } from './profile.ts'
 import { cloudOffFailure, relayFailure, transportFailure, type RelayRefusal } from './refusals.ts'
 import { Relay, RelayError, type Account, type Estimate, type Invite, type ProfileWrite, type RelayModel, type SignIn } from './relay.ts'
+import { homeWorkspace } from './home.ts'
 import { TaskRunner, textOf } from './task.ts'
 import { Turns, aggregateWork, type WorkItem } from './work.ts'
 import { SCREEN_RUN_IDLE_MS, ScreenRuns, Trajectory, type ScreenRun, type StepAction, type TrajectoryView } from './trajectory.ts'
@@ -410,6 +410,8 @@ interface State {
   models?: RelayModel[]
   deviceId?: string
   deviceName?: string
+  /** The loopback port the relay door had last; the next start asks for it again so the provider row stays right. */
+  doorPort?: number
   /** `true` lets every device of the account run things here without asking; absent or `false` means ask. */
   remoteControl?: boolean
   /** Devices allowed without asking (device id → name and when), while remote control is off. */
@@ -685,6 +687,8 @@ export default class NanomuseCloud extends Service {
   readonly provenance = new Provenance()
   /** The loopback door the model adapter reaches the relay through, so each call carries its provenance. */
   readonly relayDoor: RelayProxy
+  /** The provider row pointed at this start's door (or found pointing there already); settled after the loader is through. */
+  doorPointed: Promise<void> = Promise.resolve()
   /** What happened around turns, told to the record as codes (relay 0.31, `POST /v1/events`). */
   readonly events: ClientEvents
   /** How the question about each tool call of a session was settled, by call id (else the tool's name), until its result is seen. */
@@ -818,20 +822,26 @@ export default class NanomuseCloud extends Service {
       this.state.deviceId = `pc-dsh-${randomBytes(6).toString('hex')}`
       await this.writeState()
     }
-    // The door to the relay for the model adapter (relay 0.31): a port of this start's own, so
-    // the provider row written at an earlier start is pointed at it again before anything
-    // calls through it; without a loopback port the row is pointed at the relay itself.
+    // The door to the relay for the model adapter (relay 0.31): the port the last start had
+    // when it is free, so the provider row written then still points here; without a loopback
+    // port the row is pointed at the relay itself.
     try {
-      await this.relayDoor.listen()
+      await this.relayDoor.listen(this.state.doorPort)
+      if (this.relayDoor.port !== this.state.doorPort) {
+        this.state = { ...this.state, doorPort: this.relayDoor.port }
+        await this.writeState()
+      }
     } catch (error: unknown) {
       this.ctx.logger.warn('nanomuse cloud: no loopback door to the relay (%s); calls go direct, without their provenance', message(error))
     }
     this.ctx.effect(() => () => void this.relayDoor.close(), 'nanomuse cloud: relay door')
-    try {
-      await this.repointProvider()
-    } catch (error: unknown) {
+    // A row that points elsewhere (the door got another port, or 1.0.7 wrote it with the relay's
+    // address) is rewritten — but not waited for: a settings write goes through the loader, which
+    // is still bringing the plugins up while this runs, so waiting here held the host before it
+    // announced its address (#701). The write lands as soon as the loader is through.
+    this.doorPointed = this.repointProvider().catch((error: unknown) => {
       this.ctx.logger.warn('nanomuse cloud: could not point the provider row at the relay door: %s', message(error))
-    }
+    })
     this.provenance.hands((sessionId) => this.handsOf(sessionId))
     this.catalogue = await loadCatalogue()
     if (!this.catalogue.length) this.ctx.logger.warn('nanomuse: assets/providers.json missing or empty; the own-key step lists nothing')
@@ -905,6 +915,7 @@ export default class NanomuseCloud extends Service {
       ctx.effect(() => ctx.on('schedule/changed' as never, (() => void this.refreshGrantTasks()) as never), 'nanomuse cloud: the tasks behind the grants')
       const runner = new TaskRunner(ctx, {
         deviceName: () => this.deviceName(),
+        home: () => homeWorkspace(ctx),
         log: (level, text) => this.ctx.logger[level](text),
         notice: (from, text) => this.notice('call', from, '', text, 'task'),
         recall: (key) => this.state.taskSessions?.[key],
@@ -964,15 +975,8 @@ export default class NanomuseCloud extends Service {
           },
           lines: (sessionId) => this.sessionLines(ctx, sessionId),
           create: async (title) => {
-            // In the home workspace (`~/nanoMuse`), as the first conversation is: a session the
-            // browser cannot place in a workspace shows a disabled composer and no transcript.
-            const folder = join(homedir(), 'nanoMuse')
-            await mkdir(folder, { recursive: true }).catch(() => undefined)
-            const registry = ctx.get('workspaceRegistry') as { create(path: string, title?: string): Promise<{ id: string }> } | undefined
-            const workspaceId = await registry?.create(folder, 'nanoMuse').then((w) => w.id).catch(() => undefined)
-            const created = await ctx.sessionController.create(
-              workspaceId ? { agentPreset: 'nanomuse', workspaceId: workspaceId as NonNullable<SessionCreateRequest['workspaceId']> } : { agentPreset: 'nanomuse', cwd: folder },
-            )
+            // In the home workspace (`~/nanoMuse`), as the first conversation is.
+            const created = await ctx.sessionController.create(await homeWorkspace(ctx))
             await ctx.sessionController.rename({ sessionId: created.sessionId, title }).catch(() => undefined)
             return String(created.sessionId)
           },
@@ -996,6 +1000,8 @@ export default class NanomuseCloud extends Service {
         token: () => this.token(),
         deviceId: () => this.state.deviceId ?? '',
         isTaskSession: (sessionId) => Object.values(this.state.taskSessions ?? {}).includes(sessionId),
+        // the rooms come up after this service, so they are looked up at the time of asking
+        isBatchSession: (sessionId) => (this.ctx.get('nanomuseRooms') as { isBatch?(id: string): boolean } | undefined)?.isBatch?.(sessionId) === true,
         load: () => this.state.sync,
         save: async (state) => {
           this.state.sync = state
@@ -3334,10 +3340,12 @@ export default class NanomuseCloud extends Service {
   }
 
   /**
-   * The row written at an earlier start points at that start's door; before the first call of
-   * this one it is pointed at today's — or at the relay itself when no door opened — and the
-   * models and the rest of the row stay as they were. Nothing to do when there is no row yet,
-   * or when it already says so.
+   * The row written at an earlier start points at that start's door; usually today's door is
+   * on the same port, and nothing is written. When it is not — the port was taken, or the row
+   * is 1.0.7's and names the relay itself — the row is pointed at today's door (or at the relay
+   * when no door opened), and the models and the rest of the row stay as they were. Nothing to
+   * do when there is no row yet. Not to be awaited from `Service.init`: the write waits for the
+   * loader, and the loader waits for init (#701).
    */
   private async repointProvider(): Promise<void> {
     const base = this.relayDoor.openaiBase || this.relay.openaiBase
@@ -3691,6 +3699,7 @@ export default class NanomuseCloud extends Service {
         ...(raw.models ? { models: raw.models } : {}),
         ...(typeof raw.deviceId === 'string' && raw.deviceId ? { deviceId: raw.deviceId } : {}),
         ...(typeof raw.deviceName === 'string' && raw.deviceName ? { deviceName: raw.deviceName } : {}),
+        ...(Number.isInteger(raw.doorPort) && (raw.doorPort as number) > 0 && (raw.doorPort as number) < 65536 ? { doorPort: raw.doorPort } : {}),
         ...(typeof raw.handsModel === 'string' && raw.handsModel ? { handsModel: raw.handsModel } : {}),
         // a grant 0.1.37 kept for the "app" "Done. Screen now:" (the mis-read head line) names nothing — dropped
         ...(Array.isArray(raw.grants) ? { grants: (raw.grants as Grant[]).filter((g) => g && typeof g.id === 'string' && typeof g.target === 'string' && !MISREAD_GRANT.test(g.target) && !isOwnApp(g.target.slice('computer_app:'.length))).map((g) => ({ id: g.id, target: g.target, at: Number(g.at) || 0, ...(typeof g.sessionId === 'string' && g.sessionId ? { sessionId: g.sessionId, sessionTitle: String(g.sessionTitle ?? '') } : {}), ...(typeof g.sessionId === 'string' && g.sessionId && typeof g.scheduleId === 'string' && g.scheduleId ? { scheduleId: g.scheduleId, scheduleTitle: String(g.scheduleTitle ?? '') } : {}) })) } : {}),

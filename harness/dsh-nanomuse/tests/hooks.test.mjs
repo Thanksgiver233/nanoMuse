@@ -31,6 +31,7 @@ const WEB_APP_ONLY = [
   'data-tool',
   'data-turn-process-inline',
   'data-turn-process-member',
+  'data-variant',
   'task-manager-page',
   '_bubble',
   '_centerCol',

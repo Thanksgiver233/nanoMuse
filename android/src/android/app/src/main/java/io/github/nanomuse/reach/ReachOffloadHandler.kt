@@ -67,7 +67,9 @@ class ReachOffloadHandler(private val context: Context) : NativeOffloadHandler {
                 else -> NativeOffloadResult(2, "nanomuse-pc: unknown subcommand '$sub'\n$HELP")
             }
         } catch (e: Computers.ReachException) {
-            failed(sub, computer, "${computer.name} answered ${e.code}: ${e.message}")
+            // A task can fail before starting or after doing some work. Keep its reason without
+            // claiming nothing ran; a raw status code would only get in the way of it (#718).
+            failed(sub, computer, if (sub == "task") "${computer.name} could not finish the task: ${e.message}" else "${computer.name} answered ${e.code}: ${e.message}")
         } catch (e: java.io.IOException) {
             AppLogger.warning(TAG, "$sub on ${computer.name}: ${e.message}")
             failed(sub, computer, "${computer.name} does not answer: ${e.message ?: e.javaClass.simpleName}. Is nanoMuse still running there?")
@@ -126,8 +128,12 @@ class ReachOffloadHandler(private val context: Context) : NativeOffloadHandler {
                 "step", "thinking", "text" -> ev.optString("text").ifBlank { ev.optString("tool") }.takeIf { it.isNotBlank() }?.let { steps.put(JSONObject().put("step", it.take(200))) }
             }
         }
+        // An empty answer cannot confirm the task's result (#718), even if earlier steps ran.
+        // Report the missing answer instead of "ok" that reads as "Done".
+        val answer = r.optString("text").trim()
+        if (answer.isEmpty()) return failed("task", c, "${c.name} finished the task without an answer.")
         return ok(
-            JSONObject().put("ok", true).put("computer", c.name).put("answer", r.optString("text"))
+            JSONObject().put("ok", true).put("computer", c.name).put("answer", answer)
                 .put("steps", steps).put("conversation", r.optString("conversation"))
                 .put("tell_user", "Relay ${c.name}'s answer to the user in their language, as coming from ${c.name}."),
         )

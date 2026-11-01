@@ -496,7 +496,13 @@ travels: side chats stay on the device that made them, and a device pulls with
 (a second switch under *Data controls*, off by default, **per device**; the
 relay has no account-wide setting for it) turns that around for the device it is
 flipped on: its side chats go up, the other devices' side chats come down, and
-the first pull after the flip starts over from zero. The first pull of a fresh
+the first pull after the flip starts over from zero. Two kinds of chat never
+travel, switch or no switch: a chat the desktop runs for another device's task
+(*From Pixel 8*, that device's conversation) and a chat the desktop's rooms run
+for themselves, the feed's daily batch among them (*Feed · <date>*, archived
+when it is done) — those are the agent's workbench, not conversations of the
+person's, and through 1.0.9 the batches did reach the phones as side chats
+once a day ([#713](https://github.com/nano-muse/nanoMuse/issues/713)). The first pull of a fresh
 sign-in asks for the **tail**, the newest 300 messages with the conversations
 they belong to, so a long history opens at once instead of paging from the
 start; the older messages it skipped stay on the relay and are not pulled. While a

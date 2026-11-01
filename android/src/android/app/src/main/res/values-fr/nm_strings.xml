@@ -1217,4 +1217,13 @@
     <string name="nm_stop_reason_done">C\'était déjà fait</string>
     <string name="nm_stop_reason_other">Autre chose</string>
     <string name="nm_feed_limit_notice">%1$d publication(s) générée(s) n’a/n’ont pas été ajoutée(s) en raison de la limite quotidienne de 12.</string>
+
+    <!-- Context maintenance -->
+    <string name="nm_context_compacting">Réduction du contexte en cours (estimation : %1$d / %2$d tokens).</string>
+    <string name="nm_context_compact_deferred">Le contexte n’a pas pu être réduit. Le traitement continue, car il tient encore dans la fenêtre du modèle.</string>
+    <string name="nm_context_limit_reached">Le contexte approche de la limite du modèle et n’a pas pu être réduit. Réessayez la réduction ou démarrez une nouvelle discussion.</string>
+    <string name="nm_context_compact_timeout">La réduction du contexte a dépassé le délai de %1$d secondes (%2$d appels au modèle).</string>
+    <string name="nm_context_compact_idle_timeout">La compression s’est arrêtée après %1$d secondes sans réponse (%2$d appels au modèle).</string>
+    <string name="nm_context_compact_no_gain">Le résumé n’a pas réduit le contexte. Le contenu original a été conservé.</string>
+    <string name="nm_context_compact_incomplete">Le modèle n’a pas renvoyé de résumé complet. Le contexte original a été conservé.</string>
 </resources>

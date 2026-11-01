@@ -120,6 +120,19 @@ final class AudioSessionCoordinator {
         apply(reason: "foreground")
     }
 
+    // nanoMuse: a muted AVPlayer still starts the session in its current category, and the
+    // default `.soloAmbient` stops other apps' music. The avatar's clip loops call this before
+    // `play()`: while no intent holds the session, it is set to `.ambient` (mixes with others)
+    // on the same serial queue as every other change, then `then` runs on the main actor.
+    func whenIdleMixable(_ then: @escaping @MainActor @Sendable () -> Void) {
+        guard highest == nil else { then(); return }
+        Self.sessionQueue.async {
+            let session = AVAudioSession.sharedInstance()
+            if session.category != .ambient { try? session.setCategory(.ambient) }
+            Task { @MainActor in then() }
+        }
+    }
+
     // MARK: - Core (the ONLY setCategory/setActive site)
 
     private var sessionActive = false
@@ -174,6 +187,9 @@ final class AudioSessionCoordinator {
                 sessionActive = false
                 logger.info("[AudioSession] \(reason) → idle, deactivating (async)")
                 Self.sessionQueue.async {
+                    // nanoMuse: back to a mixable category first, so the avatar's muted clip
+                    // loop, which keeps the session busy, cannot keep other apps' audio stopped.
+                    try? AVAudioSession.sharedInstance().setCategory(.ambient)
                     try? AVAudioSession.sharedInstance()
                         .setActive(false, options: .notifyOthersOnDeactivation)
                 }

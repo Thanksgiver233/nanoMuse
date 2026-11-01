@@ -39,6 +39,8 @@ These win over the file. They cover the settings people change most often and wh
 | `NANOMUSE_CODING_HOME` | where the coding CLIs' own homes (`~/.codex`, `~/.claude`, …) are looked for, default the user's home ([coding-agents.md](coding-agents.md)) |
 | `NANOMUSE_LOG_LEVEL` | `log_level` |
 
+For the root Docker compose file, `NANOMUSE_RUNTIME_PORT` selects the web app's published host port (default 8787). It is a compose variable, not a runtime setting or a replacement for `NANOMUSE_SERVER_PORT`; see [deployment.md](deployment.md#docker).
+
 ## `[llm]`
 
 ```toml

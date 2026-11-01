@@ -39,6 +39,8 @@ nanoMuse 只读一个 TOML 文件。`nanomuse config init` 把带注释的 [`con
 | `NANOMUSE_CODING_HOME` | 到哪里找编程 CLI 各自的家目录（`~/.codex`、`~/.claude`……），默认是用户的家目录（[coding-agents.md](coding-agents.md)） |
 | `NANOMUSE_LOG_LEVEL` | `log_level` |
 
+仓库根目录的 Docker compose 文件使用 `NANOMUSE_RUNTIME_PORT` 选择网页版在宿主机上发布的端口，默认 8787。它是 compose 变量，不是运行时设置，也不代替 `NANOMUSE_SERVER_PORT`；详见[部署](deployment.md#docker)。
+
 ## `[llm]` {#llm}
 
 ```toml
