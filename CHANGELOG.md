@@ -11,6 +11,9 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 
 ### Runtime
 
+- **The audit log is signed, so tampering with it is found.** Every entry in `<data_dir>/audit.jsonl` now carries a hash-chain link (`seq`, `prev`, `entry_hash`, HMAC-SHA256 over the entry), and `nanomuse audit --verify` reports any line edited, deleted or reordered after the fact; lines written before signing verify as unsigned. The signing key is never the vault key: it is injected, read from the OS keychain, or kept in its own `audit.key` file next to the log. The chain is tamper-evident, not unforgeable: anyone holding the device and the key can re-sign it, and the docs say so.
+- **The audit log's signing key is checked the Windows way on Windows.** The key file was refused on Windows outright: the read check looked at POSIX mode bits, and Windows reports 0666 for every file, so each read raised and the agent could not run. The check now reads the file's access list on Windows and refuses only a file open to a broad group; the POSIX mode check is unchanged.
+
 - **The Docker web app could use a different host port.** Set `NANOMUSE_RUNTIME_PORT` when port 8787 is occupied, including when a local relay shares the host. The default and the container port remain 8787. ([#717](https://github.com/nano-muse/nanoMuse/pull/717))
 
 ### Web
