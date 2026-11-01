@@ -138,11 +138,16 @@ class CompanionRuntime:
         transport: FakeTransport | None = None,
         channel: ChannelPort | None = None,
         clock: Any = None,
+        store: Any = None,
     ) -> None:
         self.enabled = enabled
         self.transport = transport or FakeTransport()
         self.channel = channel
         self._clock = clock or time.monotonic
+        # Optional persistence (nanomuse.companion.store.CompanionStore):
+        # tasks and working states survive a restart.  Without a store
+        # the runtime is exactly the in-memory Phase 4 harness.
+        self.store = store
         self._tasks: dict[str, ScheduledTask] = {}
         self._handover_log: list[dict[str, Any]] = []
         self._running = False
@@ -152,6 +157,9 @@ class CompanionRuntime:
         """Start the runtime.  Returns False (and does nothing) when off."""
         if not self.enabled:
             return False
+        if self.store is not None:
+            for task in self.store.tasks():
+                self._tasks.setdefault(task.task_id, task)
         self._running = True
         return True
 
@@ -172,6 +180,8 @@ class CompanionRuntime:
     def schedule(self, task: ScheduledTask) -> None:
         self._require_running()
         self._tasks[task.task_id] = task
+        if self.store is not None:
+            self.store.put_task(task)
 
     def run_due(self, now: float | None = None) -> list[ScheduledTask]:
         """Run every due task once.  A task that already ran never re-runs."""
@@ -183,6 +193,8 @@ class CompanionRuntime:
                 task.ran = True
                 task.result = f"ran: {task.text}"
                 ran.append(task)
+                if self.store is not None:
+                    self.store.put_task(task)
         return ran
 
     # -- IM receive/send (job 2 of 3) ----------------------------------
@@ -235,7 +247,15 @@ class CompanionRuntime:
         frame = state.to_frame()
         self.transport.send(frame)
         self._handover_log.append(frame)
+        if self.store is not None:
+            self.store.put_working(state)
         return WorkingState.from_frame(frame)
+
+    def stored_working(self, task_id: str) -> WorkingState | None:
+        """The persisted working state for a task, if this runtime has a store."""
+        if self.store is None:
+            return None
+        return self.store.working(task_id)
 
     @property
     def handover_log(self) -> list[dict[str, Any]]:

@@ -684,6 +684,19 @@ class PriceSettings(BaseModel):
     output_per_million: float = Field(default=0, ge=0, allow_inf_nan=False)
 
 
+class CompanionSettings(BaseModel):
+    """The always-on companion runtime (Phase 6 wiring).
+
+    Off by default, and off means off: a disabled companion never
+    starts.  Turning it on needs a Telegram bot token (from @BotFather)
+    for the IM side; without one the runtime still keeps scheduled
+    tasks and approval forwarding, and simply has no channel.
+    """
+
+    enabled: bool = False
+    telegram_bot_token: str = ""
+
+
 class CostSettings(BaseModel):
     """The cost ledger over real runs, and the monthly budget gate.
 
@@ -723,6 +736,7 @@ class Settings(BaseModel):
     mcp: MCPSettings = Field(default_factory=MCPSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
     cost: CostSettings = Field(default_factory=CostSettings)
+    companion: CompanionSettings = Field(default_factory=CompanionSettings)
     # Where the settings came from (informational).
     source: str | None = None
 
@@ -749,6 +763,14 @@ class Settings(BaseModel):
     @property
     def cost_ledger_file(self) -> Path:
         return self.data_dir / "cost_ledger.jsonl"
+
+    @property
+    def companion_file(self) -> Path:
+        return self.data_dir / "companion.json"
+
+    @property
+    def companion_telegram_offset_file(self) -> Path:
+        return self.data_dir / "companion_telegram_offset.json"
 
     @property
     def reminders_db(self) -> Path:
