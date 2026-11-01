@@ -1,0 +1,2012 @@
+[
+  {
+    "id": "search_fill-zh-android-1",
+    "chain": "search_fill",
+    "language": "zh",
+    "platform": "android",
+    "app": "wechat",
+    "goal": "在微信里搜索“张伟”，把他最后一条消息的第一句话填到备忘录标题",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "wechat",
+        "app_name": "微信",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "点搜索框",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "输入关键词",
+        "thought": "type the text",
+        "arguments": {
+          "text": "张伟"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "已填好：张伟说“明天下午三点开会”"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "已填好：张伟说“明天下午三点开会”",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "搜索框"
+      },
+      {
+        "action": "type",
+        "text": "张伟"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "search_fill-zh-desktop-2",
+    "chain": "search_fill",
+    "language": "zh",
+    "platform": "desktop",
+    "app": "browser",
+    "goal": "在浏览器里搜索“北京到上海高铁时刻表”，把最早一班的车次填到笔记",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "browser",
+        "app_name": "浏览器",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "点搜索框",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "输入关键词",
+        "thought": "type the text",
+        "arguments": {
+          "text": "G1"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "已填好：G1 次"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "已填好：G1 次",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "搜索框"
+      },
+      {
+        "action": "type",
+        "text": "G1"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "search_fill-zh-android-3",
+    "chain": "search_fill",
+    "language": "zh",
+    "platform": "android",
+    "app": "mail",
+    "goal": "在邮件里搜索“发票”，把第一封的发票号填到报销单备注",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "mail",
+        "app_name": "邮件",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "点搜索框",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "输入关键词",
+        "thought": "type the text",
+        "arguments": {
+          "text": "INV-2026-104"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "已填好：发票号 INV-2026-104"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "已填好：发票号 INV-2026-104",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "搜索框"
+      },
+      {
+        "action": "type",
+        "text": "INV-2026-104"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "search_fill-zh-desktop-4",
+    "chain": "search_fill",
+    "language": "zh",
+    "platform": "desktop",
+    "app": "calendar",
+    "goal": "在日历里搜索“体检”，把体检日期填到备忘录",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "calendar",
+        "app_name": "日历",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "点搜索框",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "输入关键词",
+        "thought": "type the text",
+        "arguments": {
+          "text": "11 月 3 日"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "已填好：体检在 11 月 3 日"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "已填好：体检在 11 月 3 日",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "搜索框"
+      },
+      {
+        "action": "type",
+        "text": "11 月 3 日"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "search_fill-zh-android-5",
+    "chain": "search_fill",
+    "language": "zh",
+    "platform": "android",
+    "app": "notes",
+    "goal": "在笔记里搜索“购物清单”，把第一项填到待办事项",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "notes",
+        "app_name": "笔记",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "点搜索框",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "输入关键词",
+        "thought": "type the text",
+        "arguments": {
+          "text": "牛奶"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "已填好：买牛奶"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "已填好：买牛奶",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "搜索框"
+      },
+      {
+        "action": "type",
+        "text": "牛奶"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "search_fill-en-desktop-1",
+    "chain": "search_fill",
+    "language": "en",
+    "platform": "desktop",
+    "app": "wechat",
+    "goal": "Search WeChat for Zhang Wei and copy the first line of his latest message into a note title",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "wechat",
+        "app_name": "WeChat",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "Tap the search box",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "Type the query",
+        "thought": "type the text",
+        "arguments": {
+          "text": "Zhang Wei"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "Noted: Zhang Wei said hello"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "Noted: Zhang Wei said hello",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "search box"
+      },
+      {
+        "action": "type",
+        "text": "Zhang Wei"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "search_fill-en-android-2",
+    "chain": "search_fill",
+    "language": "en",
+    "platform": "android",
+    "app": "browser",
+    "goal": "Search the browser for the earliest Beijing to Shanghai train and write its number into a note",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "browser",
+        "app_name": "Browser",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "Tap the search box",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "Type the query",
+        "thought": "type the text",
+        "arguments": {
+          "text": "G1"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "Noted: train G1"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "Noted: train G1",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "search box"
+      },
+      {
+        "action": "type",
+        "text": "G1"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "search_fill-en-desktop-3",
+    "chain": "search_fill",
+    "language": "en",
+    "platform": "desktop",
+    "app": "mail",
+    "goal": "Search mail for invoice and copy the first invoice number into the expense note",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "mail",
+        "app_name": "Mail",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "Tap the search box",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "Type the query",
+        "thought": "type the text",
+        "arguments": {
+          "text": "INV-2026-104"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "Noted: invoice INV-2026-104"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "Noted: invoice INV-2026-104",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "search box"
+      },
+      {
+        "action": "type",
+        "text": "INV-2026-104"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "search_fill-en-android-4",
+    "chain": "search_fill",
+    "language": "en",
+    "platform": "android",
+    "app": "calendar",
+    "goal": "Search the calendar for dentist and copy the appointment date into a note",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "calendar",
+        "app_name": "Calendar",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "Tap the search box",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "Type the query",
+        "thought": "type the text",
+        "arguments": {
+          "text": "Nov 3"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "Noted: dentist on Nov 3"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "Noted: dentist on Nov 3",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "search box"
+      },
+      {
+        "action": "type",
+        "text": "Nov 3"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "search_fill-en-desktop-5",
+    "chain": "search_fill",
+    "language": "en",
+    "platform": "desktop",
+    "app": "notes",
+    "goal": "Search notes for shopping list and copy the first item into the todo list",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "notes",
+        "app_name": "Notes",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "Tap the search box",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "Type the query",
+        "thought": "type the text",
+        "arguments": {
+          "text": "milk"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "Noted: buy milk"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "Noted: buy milk",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "search box"
+      },
+      {
+        "action": "type",
+        "text": "milk"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "receive_create-zh-android-1",
+    "chain": "receive_create",
+    "language": "zh",
+    "platform": "android",
+    "app": "wechat",
+    "goal": "读李雷发来的聚餐时间，新建一个日历事件",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "wechat",
+        "app_name": "微信",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "点开消息",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "新建事项",
+        "thought": "type the text",
+        "arguments": {
+          "text": "聚餐"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "已新建：周六晚 7 点聚餐"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "已新建：周六晚 7 点聚餐",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "消息"
+      },
+      {
+        "action": "type",
+        "text": "聚餐"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "receive_create-zh-desktop-2",
+    "chain": "receive_create",
+    "language": "zh",
+    "platform": "desktop",
+    "app": "mail",
+    "goal": "读王芳发来的会议邀请，新建一条待办提醒",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "mail",
+        "app_name": "邮件",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "点开消息",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "新建事项",
+        "thought": "type the text",
+        "arguments": {
+          "text": "例会"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "已新建提醒：周一 10 点例会"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "已新建提醒：周一 10 点例会",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "消息"
+      },
+      {
+        "action": "type",
+        "text": "例会"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "receive_create-zh-android-3",
+    "chain": "receive_create",
+    "language": "zh",
+    "platform": "android",
+    "app": "sms",
+    "goal": "读银行发来的验证码短信，新建一条备忘（只记事项不记验证码）",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "sms",
+        "app_name": "短信",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "点开消息",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "新建事项",
+        "thought": "type the text",
+        "arguments": {
+          "text": "银行短信"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "已新建备忘：银行短信已读"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "已新建备忘：银行短信已读",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "消息"
+      },
+      {
+        "action": "type",
+        "text": "银行短信"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "receive_create-zh-desktop-4",
+    "chain": "receive_create",
+    "language": "zh",
+    "platform": "desktop",
+    "app": "dingtalk",
+    "goal": "读群里发来的值班表，新建一条日历事件",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "dingtalk",
+        "app_name": "钉钉",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "点开消息",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "新建事项",
+        "thought": "type the text",
+        "arguments": {
+          "text": "值班"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "已新建：周日值班"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "已新建：周日值班",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "消息"
+      },
+      {
+        "action": "type",
+        "text": "值班"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "receive_create-zh-android-5",
+    "chain": "receive_create",
+    "language": "zh",
+    "platform": "android",
+    "app": "feishu",
+    "goal": "读同事发来的文档链接，新建一条收藏笔记",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "feishu",
+        "app_name": "飞书",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "点开消息",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "新建事项",
+        "thought": "type the text",
+        "arguments": {
+          "text": "文档链接"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "已新建笔记：收藏了文档链接"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "已新建笔记：收藏了文档链接",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "消息"
+      },
+      {
+        "action": "type",
+        "text": "文档链接"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "receive_create-en-desktop-1",
+    "chain": "receive_create",
+    "language": "en",
+    "platform": "desktop",
+    "app": "wechat",
+    "goal": "Read Li Lei's dinner message and create a calendar event",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "wechat",
+        "app_name": "WeChat",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "Open the message",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "Create the item",
+        "thought": "type the text",
+        "arguments": {
+          "text": "dinner"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "Created: dinner Saturday 7pm"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "Created: dinner Saturday 7pm",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "message"
+      },
+      {
+        "action": "type",
+        "text": "dinner"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "receive_create-en-android-2",
+    "chain": "receive_create",
+    "language": "en",
+    "platform": "android",
+    "app": "mail",
+    "goal": "Read Wang Fang's meeting invite and create a reminder",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "mail",
+        "app_name": "Mail",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "Open the message",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "Create the item",
+        "thought": "type the text",
+        "arguments": {
+          "text": "meeting"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "Created reminder: Monday 10am meeting"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "Created reminder: Monday 10am meeting",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "message"
+      },
+      {
+        "action": "type",
+        "text": "meeting"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "receive_create-en-desktop-3",
+    "chain": "receive_create",
+    "language": "en",
+    "platform": "desktop",
+    "app": "sms",
+    "goal": "Read the delivery message and create a note",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "sms",
+        "app_name": "Messages",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "Open the message",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "Create the item",
+        "thought": "type the text",
+        "arguments": {
+          "text": "parcel"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "Created note: parcel arriving"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "Created note: parcel arriving",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "message"
+      },
+      {
+        "action": "type",
+        "text": "parcel"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "receive_create-en-android-4",
+    "chain": "receive_create",
+    "language": "en",
+    "platform": "android",
+    "app": "slack",
+    "goal": "Read the on-call rota message and create a calendar event",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "slack",
+        "app_name": "Slack",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "Open the message",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "Create the item",
+        "thought": "type the text",
+        "arguments": {
+          "text": "on-call"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "Created: on-call Sunday"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "Created: on-call Sunday",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "message"
+      },
+      {
+        "action": "type",
+        "text": "on-call"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "receive_create-en-desktop-5",
+    "chain": "receive_create",
+    "language": "en",
+    "platform": "desktop",
+    "app": "docs",
+    "goal": "Read the shared doc link and create a bookmark note",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "docs",
+        "app_name": "Docs",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "Open the message",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "Create the item",
+        "thought": "type the text",
+        "arguments": {
+          "text": "doc"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "Created note: bookmarked the doc"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "Created note: bookmarked the doc",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "message"
+      },
+      {
+        "action": "type",
+        "text": "doc"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "transfer_verify-zh-android-1",
+    "chain": "transfer_verify",
+    "language": "zh",
+    "platform": "android",
+    "app": "wechat",
+    "goal": "把备忘录里的地址发给张伟，再读回已发送的消息核对",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "wechat",
+        "app_name": "微信",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "点分享",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "输入内容",
+        "thought": "type the text",
+        "arguments": {
+          "text": "地址"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "已核对：地址已发给张伟"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "已核对：地址已发给张伟",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "分享"
+      },
+      {
+        "action": "type",
+        "text": "地址"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "transfer_verify-zh-desktop-2",
+    "chain": "transfer_verify",
+    "language": "zh",
+    "platform": "desktop",
+    "app": "mail",
+    "goal": "把周报发给王芳，再到已发送里核对",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "mail",
+        "app_name": "邮件",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "点分享",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "输入内容",
+        "thought": "type the text",
+        "arguments": {
+          "text": "周报"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "已核对：周报已发给王芳"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "已核对：周报已发给王芳",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "分享"
+      },
+      {
+        "action": "type",
+        "text": "周报"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "transfer_verify-zh-android-3",
+    "chain": "transfer_verify",
+    "language": "zh",
+    "platform": "android",
+    "app": "notes",
+    "goal": "把购物清单分享到家庭群，再核对群里出现了这条分享",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "notes",
+        "app_name": "笔记",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "点分享",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "输入内容",
+        "thought": "type the text",
+        "arguments": {
+          "text": "购物清单"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "已核对：清单已分享到家庭群"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "已核对：清单已分享到家庭群",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "分享"
+      },
+      {
+        "action": "type",
+        "text": "购物清单"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "transfer_verify-zh-desktop-4",
+    "chain": "transfer_verify",
+    "language": "zh",
+    "platform": "desktop",
+    "app": "browser",
+    "goal": "把这篇文章链接分享到微信收藏，再核对收藏里有它",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "browser",
+        "app_name": "浏览器",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "点分享",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "输入内容",
+        "thought": "type the text",
+        "arguments": {
+          "text": "链接"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "已核对：链接已收藏"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "已核对：链接已收藏",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "分享"
+      },
+      {
+        "action": "type",
+        "text": "链接"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "transfer_verify-zh-android-5",
+    "chain": "transfer_verify",
+    "language": "zh",
+    "platform": "android",
+    "app": "calendar",
+    "goal": "把会议邀请发给李雷，再核对邀请状态为已发送",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "calendar",
+        "app_name": "日历",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "点分享",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "输入内容",
+        "thought": "type the text",
+        "arguments": {
+          "text": "邀请"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "已核对：邀请已发给李雷"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "已核对：邀请已发给李雷",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "分享"
+      },
+      {
+        "action": "type",
+        "text": "邀请"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "transfer_verify-en-desktop-1",
+    "chain": "transfer_verify",
+    "language": "en",
+    "platform": "desktop",
+    "app": "wechat",
+    "goal": "Send the address from the note to Zhang Wei, then read back the sent message to verify",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "wechat",
+        "app_name": "WeChat",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "Tap share",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "Type the content",
+        "thought": "type the text",
+        "arguments": {
+          "text": "address"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "Verified: address sent to Zhang Wei"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "Verified: address sent to Zhang Wei",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "share"
+      },
+      {
+        "action": "type",
+        "text": "address"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "transfer_verify-en-android-2",
+    "chain": "transfer_verify",
+    "language": "en",
+    "platform": "android",
+    "app": "mail",
+    "goal": "Send the weekly report to Wang Fang, then check Sent to verify",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "mail",
+        "app_name": "Mail",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "Tap share",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "Type the content",
+        "thought": "type the text",
+        "arguments": {
+          "text": "report"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "Verified: report sent to Wang Fang"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "Verified: report sent to Wang Fang",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "share"
+      },
+      {
+        "action": "type",
+        "text": "report"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "transfer_verify-en-desktop-3",
+    "chain": "transfer_verify",
+    "language": "en",
+    "platform": "desktop",
+    "app": "notes",
+    "goal": "Share the shopping list to the family group, then verify it appears there",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "notes",
+        "app_name": "Notes",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "Tap share",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "Type the content",
+        "thought": "type the text",
+        "arguments": {
+          "text": "shopping list"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "Verified: list shared to the family group"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "Verified: list shared to the family group",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "share"
+      },
+      {
+        "action": "type",
+        "text": "shopping list"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "transfer_verify-en-android-4",
+    "chain": "transfer_verify",
+    "language": "en",
+    "platform": "android",
+    "app": "browser",
+    "goal": "Share this article link to favorites, then verify it is saved",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "browser",
+        "app_name": "Browser",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "Tap share",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "Type the content",
+        "thought": "type the text",
+        "arguments": {
+          "text": "link"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "Verified: link saved"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "Verified: link saved",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "share"
+      },
+      {
+        "action": "type",
+        "text": "link"
+      }
+    ],
+    "max_steps": 6
+  },
+  {
+    "id": "transfer_verify-en-desktop-5",
+    "chain": "transfer_verify",
+    "language": "en",
+    "platform": "desktop",
+    "app": "calendar",
+    "goal": "Send the meeting invite to Li Lei, then verify it shows as sent",
+    "context": "",
+    "screens": [
+      {
+        "app": "launcher",
+        "app_name": "Home",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      },
+      {
+        "app": "calendar",
+        "app_name": "Calendar",
+        "width": 390,
+        "height": 844,
+        "screenshot": "TINY"
+      }
+    ],
+    "script": [
+      {
+        "action": "click",
+        "label": "Tap share",
+        "thought": "tap the target",
+        "arguments": {
+          "coordinate": [
+            499,
+            499
+          ]
+        }
+      },
+      {
+        "action": "type",
+        "label": "Type the content",
+        "thought": "type the text",
+        "arguments": {
+          "text": "invite"
+        }
+      },
+      {
+        "action": "answer",
+        "label": "Report the result",
+        "thought": "done",
+        "arguments": {
+          "text": "Verified: invite sent to Li Lei"
+        }
+      }
+    ],
+    "expected_status": "done",
+    "expected_text_contains": "Verified: invite sent to Li Lei",
+    "checkpoints": [
+      {
+        "action": "tap",
+        "label_contains": "share"
+      },
+      {
+        "action": "type",
+        "text": "invite"
+      }
+    ],
+    "max_steps": 6
+  }
+]

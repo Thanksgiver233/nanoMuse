@@ -74,6 +74,8 @@ A choice you made on the row always wins, and the row says what *Automatic* give
 
 The key goes into the vault like any other (`nanomuse vault set GUI_API_KEY`, or type it into the Phone card). The operator's model **must accept images**: a screenshot is the whole observation. The operator calls it at temperature 0: grounding wants the model's first choice, not a sample.
 
+When the hands model fails, `[gui] fallback_models` names model ids to try in order on the same endpoint. A model that cannot take images is never tried for a hands task: the run refuses rather than answering about a screen it never saw. If the model stops taking images in the middle of a task, the operator stops at once instead of acting on the next step blind, and says so. Two failed steps in a row stop the run and hand it to the person, after one step down the screen, browser, API ladder, recorded in the trace. Every trace step carries the hash of the screenshot it saw, so a replay can check it saw the same screen.
+
 Environment overrides: `NANOMUSE_GUI_ENABLED`, `NANOMUSE_GUI_PROVIDER`, `NANOMUSE_GUI_MODEL`, `NANOMUSE_GUI_BASE_URL`, `NANOMUSE_GUI_API_KEY`.
 
 Other settings: `max_steps` (default 0 = no cap; set a number to bound a single `phone_task`), `device_timeout_s` (default 20, how long to wait for the phone to answer one request), `sensitive_words` (the list below).

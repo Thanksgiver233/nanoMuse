@@ -18,6 +18,7 @@ trace as one HTML page with the screenshots and the taps drawn on them.
 from __future__ import annotations
 
 import base64
+import hashlib
 import html
 import json
 import time
@@ -82,6 +83,9 @@ class Trace:
                 "step": step_no,
                 "t": time.time(),
                 "screen": screen.to_dict(),
+                # The hash of the screenshot bytes, so a replay can tell
+                # whether it saw the same screen without keeping the picture.
+                "screen_sha256": _file_sha256(screen.image_path),
                 "thought": step.thought if step else None,
                 "action": step.action if step else None,
                 "tool_call": {"name": step.name, "arguments": step.arguments} if step else None,
@@ -89,6 +93,19 @@ class Trace:
                 "raw": None if step else raw[:2000],
                 "latency_ms": latency_ms,
                 "error": error,
+            }
+        )
+
+    def degrade(self, step_no: int, from_rung: str, to_rung: str, reason: str) -> None:
+        """A step down the degradation ladder, as its own trace record."""
+        self._write(
+            {
+                "kind": "degrade",
+                "step": step_no,
+                "t": time.time(),
+                "from": from_rung,
+                "to": to_rung,
+                "reason": reason[:200],
             }
         )
 
@@ -113,6 +130,19 @@ class Trace:
         except OSError as exc:
             logger.warning("could not write phone trace: {}", exc)
             self.path = None
+
+
+def _file_sha256(path: str | None) -> str | None:
+    if not path:
+        return None
+    try:
+        digest = hashlib.sha256()
+        with Path(path).open("rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
 
 
 def _prune(traces_dir: Path) -> None:

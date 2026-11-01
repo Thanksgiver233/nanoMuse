@@ -116,3 +116,23 @@ def test_llm_ready_reads_the_vault_and_the_sign_in(settings: Settings, tmp_path:
     assert llm_ready(chatgpt, vault, tmp_path) is False
     TokenStore.in_dir(tmp_path).save(Token(access="a", refresh="r", expires_at=0, account_id="x"))
     assert llm_ready(chatgpt, vault, tmp_path) is True
+
+
+def test_gui_fallback_chain_wraps_the_hands_client(settings: Settings):
+    from nanomuse.llm.fallback import FallbackLLM
+    from nanomuse.llm.openai_chat import OpenAIChatLLM
+
+    settings.gui.model = "qwen3.8-27b"
+    settings.gui.provider = "openai"
+    settings.gui.base_url = "http://x/v1"
+    app = NanoMuseApp(settings, ui=AutoApproveUI(), llm=MockLLM([]))  # type: ignore[arg-type]
+    plain = app.make_gui_llm()
+    assert isinstance(plain, OpenAIChatLLM)
+
+    settings.gui.fallback_models = ["qwen3.8-flash", "deepseek-chat"]
+    chain = app.make_gui_llm()
+    assert isinstance(chain, FallbackLLM)
+    assert chain.requires_vision is True
+    assert len(chain._factories) == 3
+    assert chain._client(1).settings.model == "qwen3.8-flash"  # type: ignore[attr-defined]
+    assert chain._client(2).settings.model == "deepseek-chat"  # type: ignore[attr-defined]
