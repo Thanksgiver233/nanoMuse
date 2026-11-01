@@ -11,6 +11,9 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 
 ### Runtime
 
+- **A memory line says who wrote it and how sure they were.** Each stored fact now carries the model that wrote it and a confidence between 0 and 1 (unknown for older lines and lines written by hand), kept through merges, drops and restores; conflicting lines are resolved by a stated rule (a line the person wrote wins, then an explicit correction, then the newer fact, then the higher confidence) instead of a silent merge. Old databases upgrade in place.
+- **A remembered fact says who wrote it when it is read back.** The remember tool now records the model running at the time and an optional confidence, and recall shows both; when a new wording matches a line the person wrote, or an explicit correction of it, the existing line is kept instead of silently rewritten.
+
 - **The Docker web app could use a different host port.** Set `NANOMUSE_RUNTIME_PORT` when port 8787 is occupied, including when a local relay shares the host. The default and the container port remain 8787. ([#717](https://github.com/nano-muse/nanoMuse/pull/717))
 
 ### Web
