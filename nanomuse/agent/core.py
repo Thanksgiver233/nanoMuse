@@ -16,6 +16,7 @@ from nanomuse.agent.context import fit_context
 from nanomuse.calendar import CalendarFeeds
 from nanomuse.config import Settings
 from nanomuse.contacts import ContactBook
+from nanomuse.cost import recording as cost_recording
 from nanomuse.goals import GoalStore
 from nanomuse.llm import budget as task_budget
 from nanomuse.llm import session as llm_session
@@ -440,6 +441,9 @@ class MuseAgent:
     ) -> str:
         if self.state == AgentState.RUNNING:
             raise RuntimeError("agent is already running")
+        # The cost gate's hard mode refuses here, before any work or spend;
+        # a no-op unless a recorder with a hard gate is installed.
+        cost_recording.preflight()
         token = task_budget.begin(self.settings.agent.budget, inherit=False)
         budget = task_budget.current()
         assert budget is not None
@@ -468,6 +472,20 @@ class MuseAgent:
         finally:
             try:
                 self.last_budget = budget.snapshot()
+                # Feed the cost ledger from the real run; bookkeeping only, so a
+                # ledger failure never reaches the finished task.
+                try:
+                    cost_recording.record_finished_task(
+                        task_id=self.conversation_id or self.session_id,
+                        model=(
+                            getattr(self.llm, "model", None)
+                            or getattr(self.llm, "name", "")
+                            or self.settings.llm.model
+                        ),
+                        snapshot=self.last_budget,
+                    )
+                except Exception:
+                    logger.exception("cost ledger recording failed")
                 # a line in the audit log when a budget is in force or was reached; a task
                 # with no limits set leaves the log as it was
                 if budget.limited or budget.stopped:

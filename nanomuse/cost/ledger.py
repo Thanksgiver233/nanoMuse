@@ -10,7 +10,10 @@ not a block: the ledger reports, it never refuses work.
 
 No real vendor bill is read here.  Reconciling against a real bill is
 a separate script (``scripts/reconcile_costs.py``) and, for real
-bills, still undone: Gate 4 item 4 stays unmet.
+bills, still undone.  Since Phase 6 the entries themselves are real:
+``nanomuse.cost.recording`` feeds this ledger from finished runs and
+``nanomuse.cost.store`` persists it; what remains fixture-only is the
+reconciliation against a vendor invoice.
 """
 
 from __future__ import annotations
