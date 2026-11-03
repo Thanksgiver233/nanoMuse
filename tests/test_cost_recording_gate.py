@@ -42,8 +42,12 @@ def test_persistent_ledger_survives_a_reopen(tmp_path: Path) -> None:
     path = tmp_path / "cost_ledger.jsonl"
     book = PersistentCostLedger(path, prices=PRICES, monthly_budget_usd=5.0)
     book.record(
-        task_id="t1", device_id="phone", model="mock",
-        input_tokens=1_000_000, output_tokens=500_000, month=MONTH,
+        task_id="t1",
+        device_id="phone",
+        model="mock",
+        input_tokens=1_000_000,
+        output_tokens=500_000,
+        month=MONTH,
     )
     assert book.month_total(MONTH) == 6.0
     assert len(book.alerts) == 1  # crossed the 5 USD budget
@@ -58,8 +62,12 @@ def test_persistent_ledger_skips_a_damaged_line(tmp_path: Path) -> None:
     path = tmp_path / "cost_ledger.jsonl"
     book = PersistentCostLedger(path, prices=PRICES)
     book.record(
-        task_id="t1", device_id="phone", model="mock",
-        input_tokens=10, output_tokens=10, month=MONTH,
+        task_id="t1",
+        device_id="phone",
+        model="mock",
+        input_tokens=10,
+        output_tokens=10,
+        month=MONTH,
     )
     with path.open("a", encoding="utf-8") as handle:
         handle.write("{not json\n")
@@ -86,9 +94,12 @@ def test_recorder_turns_a_snapshot_into_a_priced_entry() -> None:
 def test_recorder_skips_a_task_that_made_no_calls() -> None:
     book = CostLedger(prices=PRICES)
     recorder = TaskCostRecorder(book)
-    assert recorder.record_finished_task(
-        task_id="t", model="mock", snapshot=snapshot(0, 0), month=MONTH
-    ) is None
+    assert (
+        recorder.record_finished_task(
+            task_id="t", model="mock", snapshot=snapshot(0, 0), month=MONTH
+        )
+        is None
+    )
     assert book.entries == []
 
 
@@ -98,8 +109,12 @@ def test_recorder_skips_a_task_that_made_no_calls() -> None:
 def over_budget_ledger() -> CostLedger:
     book = CostLedger(prices=PRICES, monthly_budget_usd=5.0)
     book.record(
-        task_id="t1", device_id="d", model="mock",
-        input_tokens=1_000_000, output_tokens=500_000, month=MONTH,
+        task_id="t1",
+        device_id="d",
+        model="mock",
+        input_tokens=1_000_000,
+        output_tokens=500_000,
+        month=MONTH,
     )
     return book
 
@@ -134,8 +149,12 @@ def test_gate_hard_override_lets_exactly_one_task_past() -> None:
 def test_gate_without_a_budget_never_blocks() -> None:
     book = CostLedger(prices=PRICES)  # no monthly budget set
     book.record(
-        task_id="t", device_id="d", model="mock",
-        input_tokens=10_000_000, output_tokens=0, month=MONTH,
+        task_id="t",
+        device_id="d",
+        model="mock",
+        input_tokens=10_000_000,
+        output_tokens=0,
+        month=MONTH,
     )
     MonthlyBudgetGate(book, mode="hard").check_before_task(MONTH)
 
@@ -147,9 +166,7 @@ def test_a_real_run_lands_in_the_ledger(tmp_path: Path) -> None:
     settings = Settings(data_dir=tmp_path)
     ui = HeadlessUI()
     audit = AuditLog(settings.audit_file)
-    llm = MockLLM(
-        [LLMResponse(content="ok", usage={"input_tokens": 1000, "output_tokens": 500})]
-    )
+    llm = MockLLM([LLMResponse(content="ok", usage={"input_tokens": 1000, "output_tokens": 500})])
     agent = MuseAgent(
         settings, llm, ToolCollection(), Sentinel(settings.sentinel, audit, ui), ui, audit
     )
@@ -175,8 +192,12 @@ def test_hard_gate_refuses_a_run_before_it_starts(tmp_path: Path) -> None:
     )
     book = CostLedger(prices=PRICES, monthly_budget_usd=5.0)
     book.record(
-        task_id="t1", device_id="d", model="mock",
-        input_tokens=1_000_000, output_tokens=500_000, month=current_month(),
+        task_id="t1",
+        device_id="d",
+        model="mock",
+        input_tokens=1_000_000,
+        output_tokens=500_000,
+        month=current_month(),
     )
     gate = MonthlyBudgetGate(book, mode="hard")
     recording.install(TaskCostRecorder(book, gate=gate))

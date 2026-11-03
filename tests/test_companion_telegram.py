@@ -141,8 +141,9 @@ def test_tasks_and_working_states_survive_a_restart(tmp_path: Path) -> None:
     assert runtime.start()
     runtime.schedule(ScheduledTask(task_id="t1", text="water the plants", run_at=100.0))
     runtime.run_due(now=150.0)
-    runtime.handover(WorkingState(task_id="t1", conversation_id="c1", step=3,
-                                   finished_steps=["a", "b"]))
+    runtime.handover(
+        WorkingState(task_id="t1", conversation_id="c1", step=3, finished_steps=["a", "b"])
+    )
 
     restarted = CompanionRuntime(enabled=True, store=CompanionStore(path))
     assert restarted.start()
