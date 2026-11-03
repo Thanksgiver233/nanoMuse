@@ -24,11 +24,17 @@ restart does not re-deliver), and `nanomuse/companion/store.py` keeps
 scheduled tasks and working states on disk, so both survive a restart
 and a task that ran before it never runs twice after it.
 `nanomuse/companion/factory.py` builds the runtime from the
-`[companion]` settings. What is still missing: the runtime is not yet
-wired into the running server, there is no deployment or VPS behind
-it, and the 8 hour shutdown test has not been run. The Hub transport
-between runtimes is still the in-memory fake; only the IM channel and
-the local state are real.
+`[companion]` settings, and the runtime now runs inside the server:
+`nanomuse/companion/service.py` ticks it on a loop while
+`nanomuse serve` is up (due tasks, inbound drain, every inbound
+message published on the event bus), and `MuseService` starts and
+stops it with the other services. What is still missing: there is no
+deployment or VPS behind it, and the 8 hour shutdown test has not
+been run; the long-run behaviour is covered by a compressed
+simulation (two virtual days, ten restarts, every task run exactly
+once), which is not a substitute for the wall-clock soak. The Hub
+transport between runtimes is still the in-memory fake; the IM
+channel, the local state and the server wiring are real.
 
 When a device goes offline mid-task, the task's state travels as a
 `working` frame: task id, conversation id, the next step to run, the
@@ -107,9 +113,9 @@ person's own table, not a vendor invoice.
 
 ## What is still missing
 
-An 8 hour shutdown test with a real deployment, wiring of the
-companion runtime into the running service, and a real bill
-reconciliation. The IM vendor behind the channel port and the ledger
-entries are real now (Phase 6); their remaining Gate items are the
-deployment, the long test, and the vendor bill, and the test numbers
-for those are still fixture numbers, not measured capability.
+An 8 hour shutdown test with a real deployment, and a real bill
+reconciliation. The IM vendor behind the channel port, the ledger
+entries and the server wiring are real now (Phase 6); their
+remaining Gate items are the deployment, the long test, and the
+vendor bill, and the test numbers for those are still fixture
+numbers, not measured capability.
