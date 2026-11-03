@@ -181,9 +181,7 @@ class NanoMuseApp:
         )
         gate = MonthlyBudgetGate(ledger, mode=cost.mode)
         cost_recording.install(
-            TaskCostRecorder(
-                ledger, device_id=cost.device_id or "this-device", gate=gate
-            )
+            TaskCostRecorder(ledger, device_id=cost.device_id or "this-device", gate=gate)
         )
         return ledger
 
