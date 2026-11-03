@@ -97,13 +97,25 @@ recorded spend reaches the budget, new tasks are refused before they
 start; one approved task at a time can be let past with
 `override_once`, which the approval flows call).
 
-`scripts/reconcile_costs.py` compares ledger rows against a JSON bill
-fixture under one price table and reports the relative error per
-model and in total. It exits 0 within tolerance (5 percent by
-default), 1 beyond it, and 2 on a usage error. It reconciles
-fixtures only. No real vendor bill has been reconciled against this
-ledger yet: the entries are real usage now, but the prices are the
-person's own table, not a vendor invoice.
+`scripts/reconcile_costs.py` (the library is
+`nanomuse/cost/reconcile.py`) reconciles the persisted ledger file
+against a vendor bill or usage export. The ledger side reads the
+JSONL file the store appends, with `--month YYYY-MM` keeping one
+month's rows. The bill side is one or more saved export files,
+recognised by their shape: the hand-written fixture JSON, an OpenAI
+usage export (tokens per model) and costs export (amounts per model,
+the two merge when both are given), an Anthropic usage report (cache
+creation and cache read tokens count as input, as the vendor bills
+them), or a plain CSV with model, token, and cost columns. Per model
+it compares token counts and amounts, and reports both relative
+errors. When the bill carries its own amounts, those are what the
+ledger is checked against; when it does not, the bill's tokens are
+priced with the person's price table and the output marks the model
+as priced from the table. It exits 0 within tolerance (5 percent by
+default), 1 beyond it, and 2 on a usage error. The Gate is still not
+met: the tooling reads real files now, but no real vendor export has
+been run through it yet, so reconciliation against a real bill
+remains undone until the person saves one export and runs it.
 
 ## What is still missing
 

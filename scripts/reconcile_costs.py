@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
-"""Reconcile a cost ledger against a vendor bill fixture.
+"""Reconcile the cost ledger against a vendor bill or usage export.
 
-The bill is a JSON file of the shape::
+A thin command line wrapper over ``nanomuse.cost.reconcile``; the
+importers and the comparison live there.  The ledger (``--ledger``)
+is the persisted JSONL file ``nanomuse.cost.store`` appends, or a
+JSON array of the same rows.  The bill (``--bill``, repeatable) is a
+saved vendor export recognised by its shape: the hand-written fixture
+JSON, an OpenAI usage or costs export, an Anthropic usage report, or
+a CSV with model, token, and cost columns.  Usage and costs exports
+from the same vendor merge by model when both are passed.
 
-    {"entries": [{"model": ..., "input_tokens": ..., "output_tokens": ...,
-                  "cost_usd": ...}], "month": "YYYY-MM"}
+When the bill carries its own amounts, the ledger is checked against
+those amounts: the real reconciliation.  When it does not, the bill's
+tokens are priced with ``--prices`` (``{model: [input_per_million,
+output_per_million]}``) and the output marks those models as priced
+from the table.  ``--month YYYY-MM`` keeps only that month's ledger
+rows.  Exit 0 when token and amount errors are both within
+``--tolerance`` (default 5 percent), 1 beyond it, 2 on a usage
+error.  ``--json`` prints the comparison as JSON; the default prints
+one line per model plus a total line.  Amounts and token counts are
+printed, never any credential: neither file may contain one.
 
-The ledger is a JSON file of rows in the shape ``CostLedger.to_rows``
-writes.  Both sides are priced with the same price table (``--prices``
-JSON: ``{model: [input_per_million, output_per_million]}``), so the
-comparison measures the ledger's arithmetic, not the vendor's
-metering.  Exit 0 when the relative error is within ``--tolerance``
-(default 5%), 1 when it is not, 2 on a usage error.  ``--json`` prints
-the comparison as JSON; the default prints one line per model plus a
-total line.  Amounts are printed, never any credential: neither file
-may contain one.
-
-This script reconciles fixtures only.  A real vendor bill has never
-been reconciled against this ledger, and Gate 4 item 4 stays unmet
-until one is.
+The tooling reads real ledger files and real vendor exports now.
+A real vendor bill has still never been reconciled against this
+ledger, and the reconciliation Gate item stays unmet until one is.
 """
 
 from __future__ import annotations
@@ -30,92 +35,67 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from nanomuse.cost.ledger import PriceEntry  # noqa: E402
+from nanomuse.cost.reconcile import (  # noqa: E402
+    ReconcileError,
+    compare,
+    compare_amounts,
+    import_bill,
+    load_ledger,
+    load_prices,
+    merge_bills,
+    price_bill,
+)
+
+__all__ = ["compare_amounts", "compare", "load_prices", "price_bill"]
 
 
-def load_prices(path: Path) -> dict[str, PriceEntry]:
-    raw = json.loads(path.read_text())
-    return {
-        model: PriceEntry(model, float(rates[0]), float(rates[1])) for model, rates in raw.items()
-    }
-
-
-def price_bill(entries: list[dict], prices: dict[str, PriceEntry]) -> dict[str, float]:
-    totals: dict[str, float] = {}
-    for entry in entries:
-        price = prices.get(str(entry["model"]))
-        cost = (
-            price.cost(int(entry["input_tokens"]), int(entry["output_tokens"]))
-            if price
-            else float(entry.get("cost_usd", 0.0))
-        )
-        totals[str(entry["model"])] = totals.get(str(entry["model"]), 0.0) + cost
-    return totals
-
-
-def compare(
-    ledger_totals: dict[str, float],
-    bill_totals: dict[str, float],
-    tolerance: float,
-) -> dict:
-    models = sorted(set(ledger_totals) | set(bill_totals))
-    rows = []
-    for model in models:
-        ledger = ledger_totals.get(model, 0.0)
-        bill = bill_totals.get(model, 0.0)
-        error = 0.0 if bill == 0.0 else abs(ledger - bill) / bill
-        rows.append(
-            {
-                "model": model,
-                "ledger_usd": round(ledger, 6),
-                "bill_usd": round(bill, 6),
-                "relative_error": round(error, 6),
-                "within_tolerance": error <= tolerance,
-            }
-        )
-    total_ledger = sum(ledger_totals.values())
-    total_bill = sum(bill_totals.values())
-    total_error = 0.0 if total_bill == 0.0 else abs(total_ledger - total_bill) / total_bill
-    return {
-        "models": rows,
-        "total_ledger_usd": round(total_ledger, 6),
-        "total_bill_usd": round(total_bill, 6),
-        "total_relative_error": round(total_error, 6),
-        "within_tolerance": total_error <= tolerance and all(r["within_tolerance"] for r in rows),
-    }
+def _format_row(row: dict) -> str:
+    line = (
+        f"{row['model']}: tokens ledger {row['ledger_input_tokens']}/{row['ledger_output_tokens']} "
+        f"bill {row['bill_input_tokens']}/{row['bill_output_tokens']} "
+        f"error {row['token_relative_error']:.2%} | "
+        f"cost ledger {row['ledger_usd']:.6f} bill {row['bill_usd']:.6f} "
+        f"error {row['cost_relative_error']:.2%}"
+    )
+    if row["priced_from_table"]:
+        line += " (bill priced from the price table)"
+    return line
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Reconcile a cost ledger with a bill fixture.")
+    parser = argparse.ArgumentParser(
+        description="Reconcile the cost ledger against a vendor bill or usage export."
+    )
     parser.add_argument("--ledger", required=True, type=Path)
-    parser.add_argument("--bill", required=True, type=Path)
-    parser.add_argument("--prices", required=True, type=Path)
+    parser.add_argument("--bill", required=True, type=Path, action="append")
+    parser.add_argument("--prices", type=Path)
     parser.add_argument("--tolerance", type=float, default=0.05)
+    parser.add_argument("--month", help="Only reconcile ledger rows from this YYYY-MM month.")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
-        ledger_rows = json.loads(args.ledger.read_text())
-        bill = json.loads(args.bill.read_text())
-        prices = load_prices(args.prices)
-    except (OSError, ValueError) as exc:
+        ledger_totals = load_ledger(args.ledger, month=args.month)
+        bill = merge_bills([import_bill(path) for path in args.bill])
+        prices = load_prices(args.prices) if args.prices else {}
+    except (OSError, ReconcileError, ValueError, KeyError) as exc:
         print(f"reconcile_costs: {exc}", file=sys.stderr)
         return 2
-    ledger_totals = price_bill(ledger_rows, prices)
-    bill_totals = price_bill(bill["entries"], prices)
-    result = compare(ledger_totals, bill_totals, args.tolerance)
+    result = compare(ledger_totals, bill, prices, args.tolerance)
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
+        if result["bill_period"]:
+            print(f"bill period: {result['bill_period']} (source: {result['bill_source']})")
         for row in result["models"]:
-            print(
-                f"{row['model']}: ledger {row['ledger_usd']:.6f} "
-                f"bill {row['bill_usd']:.6f} "
-                f"error {row['relative_error']:.2%}"
-            )
+            print(_format_row(row))
         print(
-            f"total: ledger {result['total_ledger_usd']:.6f} "
+            f"total: tokens ledger {result['total_ledger_input_tokens']}/"
+            f"{result['total_ledger_output_tokens']} "
+            f"bill {result['total_bill_input_tokens']}/{result['total_bill_output_tokens']} "
+            f"error {result['total_token_relative_error']:.2%} | "
+            f"cost ledger {result['total_ledger_usd']:.6f} "
             f"bill {result['total_bill_usd']:.6f} "
-            f"error {result['total_relative_error']:.2%}"
+            f"error {result['total_cost_relative_error']:.2%}"
         )
     return 0 if result["within_tolerance"] else 1
 
