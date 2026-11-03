@@ -695,6 +695,8 @@ class CompanionSettings(BaseModel):
 
     enabled: bool = False
     telegram_bot_token: str = ""
+    # How often the running companion polls its channel and checks due tasks.
+    poll_seconds: float = Field(default=15.0, ge=1.0)
 
 
 class CostSettings(BaseModel):
