@@ -271,6 +271,48 @@ def test_import_csv_bill_with_and_without_a_cost_column(tmp_path: Path) -> None:
     assert import_bill(without_cost).totals["gpt-5"].cost_usd is None
 
 
+DEEPSEEK_AMOUNT = (
+    "user_id,start_time_iso,end_time_iso,model,name,api_key_name,api_key,type,price,amount\n"
+    "u1,2026-10-11T00:00:00+08:00,2026-10-12T00:00:00+08:00,deepseek-flash,"
+    "deepseek-flash,some key,sk-xx,output_tokens,0.000004,1000\n"
+    "u1,2026-10-11T00:00:00+08:00,2026-10-12T00:00:00+08:00,deepseek-flash,"
+    "deepseek-flash,some key,sk-xx,input_cache_miss_tokens,0.000001,2000\n"
+    "u1,2026-10-11T00:00:00+08:00,2026-10-12T00:00:00+08:00,deepseek-flash,"
+    "deepseek-flash,some key,sk-xx,input_cache_hit_tokens,0,3000\n"
+    "u1,2026-10-11T00:00:00+08:00,2026-10-12T00:00:00+08:00,deepseek-flash,"
+    "deepseek-flash,some key,sk-xx,request_count,,7\n"
+)
+
+DEEPSEEK_COST = (
+    "user_id,start_time_iso,end_time_iso,model,name,wallet_type,cost,currency\n"
+    "u1,2026-10-11T00:00:00+08:00,2026-10-12T00:00:00+08:00,deepseek-flash,"
+    "deepseek-flash,Paid,1.25,CNY\n"
+    "u1,2026-10-11T00:00:00+08:00,2026-10-12T00:00:00+08:00,deepseek-flash,"
+    "deepseek-flash,Granted,2.75,CNY\n"
+)
+
+
+def test_import_deepseek_amount_counts_cache_tokens_as_input(tmp_path: Path) -> None:
+    imported = import_bill(write_text(tmp_path / "amount.csv", DEEPSEEK_AMOUNT))
+    assert imported.source == "deepseek-amount"
+    assert imported.period == "2026-10"
+    totals = imported.totals["deepseek-flash"]
+    assert totals.input_tokens == 5000  # 2000 cache miss + 3000 cache hit
+    assert totals.output_tokens == 1000
+    assert totals.cost_usd is None  # amounts live in the cost file
+
+
+def test_import_deepseek_cost_and_merge_with_amount(tmp_path: Path) -> None:
+    amount = import_bill(write_text(tmp_path / "amount.csv", DEEPSEEK_AMOUNT))
+    cost = import_bill(write_text(tmp_path / "cost.csv", DEEPSEEK_COST))
+    assert cost.source == "deepseek-cost-cny"
+    merged = merge_bills([amount, cost])
+    totals = merged.totals["deepseek-flash"]
+    assert totals.input_tokens == 5000
+    assert totals.output_tokens == 1000
+    assert totals.cost_usd == pytest.approx(4.0)  # 1.25 paid + 2.75 granted, yuan
+
+
 def test_import_bill_rejects_an_unrecognised_shape(tmp_path: Path) -> None:
     path = write_json(tmp_path / "mystery.json", {"hello": "world"})
     with pytest.raises(ReconcileError):

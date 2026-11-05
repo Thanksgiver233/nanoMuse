@@ -106,16 +106,18 @@ recognised by their shape: the hand-written fixture JSON, an OpenAI
 usage export (tokens per model) and costs export (amounts per model,
 the two merge when both are given), an Anthropic usage report (cache
 creation and cache read tokens count as input, as the vendor bills
-them), or a plain CSV with model, token, and cost columns. Per model
+them), a DeepSeek console export (an amount CSV with the token counts
+and a cost CSV with the amounts in yuan, the two merge when both are
+given), or a plain CSV with model, token, and cost columns. Per model
 it compares token counts and amounts, and reports both relative
 errors. When the bill carries its own amounts, those are what the
 ledger is checked against; when it does not, the bill's tokens are
 priced with the person's price table and the output marks the model
 as priced from the table. It exits 0 within tolerance (5 percent by
 default), 1 beyond it, and 2 on a usage error. The Gate is still not
-met: the tooling reads real files now, but no real vendor export has
-been run through it yet, so reconciliation against a real bill
-remains undone until the person saves one export and runs it.
+met: the tooling reads real files now and a real DeepSeek export has
+been parsed and totalled, but a reconciliation also takes a ledger
+written by real runs, and there is none yet.
 
 ## What is still missing
 

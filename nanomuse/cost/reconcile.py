@@ -16,6 +16,14 @@ vendor admin APIs, recognised by the shape of their contents:
 * an Anthropic usage report (the Admin API usage report endpoint):
   token counts per model.  Cache creation and cache read tokens are
   counted as input tokens, because the vendor bills them as input;
+* a DeepSeek console export, which comes as a pair of CSVs: the
+  ``amount`` file carries one row per day, model, and metering type
+  (cache-hit and cache-miss input tokens count as input, as the
+  vendor bills them as input), and the ``cost`` file carries the
+  daily amounts per model.  Pass both (``--bill`` repeats) and they
+  merge by model.  The amounts are yuan (CNY), so the amount check
+  only lines up when the price table is kept in yuan as well; the
+  token check does not care about currency;
 * a plain CSV with ``model,input_tokens,output_tokens,cost_usd``
   columns (the cost column may be absent).
 
@@ -27,9 +35,11 @@ are priced with the person's own price table and the result is marked
 ``priced_from_table``, which checks the vendor's metering of tokens
 but not the vendor's prices.
 
-The tooling reads real files now, but no real vendor export has been
-run through it yet, so the reconciliation Gate item stays unmet until
-one is.
+The tooling reads real files now, and a real DeepSeek export has been
+parsed and totalled by the importer.  A full reconciliation has still
+not run: it takes a ledger written by real nanoMuse runs to set
+against a bill, and there is none yet, so the reconciliation Gate
+item stays unmet.
 """
 
 from __future__ import annotations
@@ -367,11 +377,15 @@ def _import_anthropic(data: dict[str, Any], path: Path) -> BillImport:
 
 
 def _import_csv(path: Path) -> BillImport:
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")
     reader = csv.DictReader(io.StringIO(text))
     if reader.fieldnames is None:
         raise ReconcileError(f"{path}: the CSV has no header row")
-    columns = {name.strip() for name in reader.fieldnames if name}
+    columns = {name.strip().lstrip("\ufeff") for name in reader.fieldnames if name}
+    if {"model", "type", "amount"} <= columns:
+        return _import_deepseek_amount(path, reader)
+    if {"model", "wallet_type", "cost"} <= columns:
+        return _import_deepseek_cost(path, reader)
     missing = {"model", "input_tokens", "output_tokens"} - columns
     if missing:
         raise ReconcileError(f"{path}: the CSV is missing columns: {sorted(missing)}")
@@ -390,6 +404,71 @@ def _import_csv(path: Path) -> BillImport:
             float(cost_cell) if cost_cell else None,
         )
     return BillImport(totals=_finish(accums), period=None, periods=(), source="csv")
+
+
+def _clean_row(raw_row: dict[str | None, str | None]) -> dict[str, str]:
+    return {
+        (key.strip().lstrip("\ufeff") if key else ""): (value or "")
+        for key, value in raw_row.items()
+    }
+
+
+def _periods_of(rows: list[dict[str, str]]) -> tuple[str, ...]:
+    months = {row["start_time_iso"][:7] for row in rows if len(row.get("start_time_iso", "")) >= 7}
+    return tuple(sorted(months))
+
+
+def _import_deepseek_amount(path: Path, reader: csv.DictReader[str]) -> BillImport:
+    """The DeepSeek amount file: one row per day, model and metering type.
+
+    Cache-hit and cache-miss input tokens both count as input, because
+    the vendor bills them as input.  Request counts are not tokens and
+    are skipped.  The file carries no summed amount per model that the
+    reconciliation could check, so amounts come from the matching
+    cost file when it is given as well.
+    """
+    accums: dict[str, _BillAccum] = {}
+    rows: list[dict[str, str]] = []
+    for raw_row in reader:
+        row = _clean_row(raw_row)
+        rows.append(row)
+        model = row.get("model", "").strip()
+        if not model:
+            continue
+        kind = row.get("type", "").strip()
+        amount = _int(row.get("amount"))
+        if kind == "output_tokens":
+            _accumulate(accums, model, 0, amount, None)
+        elif kind in ("input_cache_miss_tokens", "input_cache_hit_tokens", "input_tokens"):
+            _accumulate(accums, model, amount, 0, None)
+    periods = _periods_of(rows)
+    return BillImport(
+        totals=_finish(accums),
+        period=periods[0] if len(periods) == 1 else None,
+        periods=periods,
+        source="deepseek-amount",
+    )
+
+
+def _import_deepseek_cost(path: Path, reader: csv.DictReader[str]) -> BillImport:
+    """The DeepSeek cost file: one row per day and model, amounts in yuan."""
+    accums: dict[str, _BillAccum] = {}
+    rows: list[dict[str, str]] = []
+    for raw_row in reader:
+        row = _clean_row(raw_row)
+        rows.append(row)
+        model = row.get("model", "").strip()
+        if not model:
+            continue
+        cost_cell = row.get("cost", "").strip()
+        _accumulate(accums, model, 0, 0, float(cost_cell) if cost_cell else None)
+    periods = _periods_of(rows)
+    return BillImport(
+        totals=_finish(accums),
+        period=periods[0] if len(periods) == 1 else None,
+        periods=periods,
+        source="deepseek-cost-cny",
+    )
 
 
 # ---------------------------------------------------------------------------
