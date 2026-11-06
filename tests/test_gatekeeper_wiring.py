@@ -150,10 +150,20 @@ async def test_dead_gatekeeper_refuses_calls(tmp_path: Path):
 
 
 def _app(tmp_path: Path):
+    import os
+
     from nanomuse.app import NanoMuseApp
     from nanomuse.llm import MockLLM
 
-    settings = Settings(data_dir=tmp_path, sentinel=SentinelSettings(gatekeeper=True))
+    # An explicit short socket path: pytest's own directories run past
+    # Darwin's socket path limit, which is what gatekeeper_socket is for.
+    settings = Settings(
+        data_dir=tmp_path,
+        sentinel=SentinelSettings(
+            gatekeeper=True,
+            gatekeeper_socket=Path("/tmp") / f"nanomuse-gk-app-{os.getpid()}.sock",
+        ),
+    )
     return NanoMuseApp(settings, HeadlessUI(), llm=MockLLM([]))
 
 
