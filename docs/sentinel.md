@@ -125,38 +125,55 @@ process of its own) is a later step, not a claim made here.
 
 The app's activity sheet (tap the avatar) reads the same file.
 
-## Gatekeeper prototype (Linux and macOS, not the default)
+## Gatekeeper (Linux and macOS, opt-in)
 
-`nanomuse/sentinel/gatekeeper.py` is a first step toward the key separation
-the audit section above calls for, and it is a prototype on purpose: it is not
-wired into the running agent, and the in-process Sentinel stays the default.
+`nanomuse/sentinel/gatekeeper.py` is the key separation the audit section
+above calls for. It is off by default; `[sentinel] gatekeeper = true` puts it
+in the loop, and the in-process Sentinel stays in charge of everything else
+(prompts, execution, the audit log) either way.
 
-A supervisor starts the gatekeeper as a child process and hands it the audit
-signing key on a file descriptor; when no key is passed at spawn, the child
-reads it from the OS keychain instead. There is no file fallback: with neither
-available the child refuses to start, and the agent side refuses the call
-rather than running it undecided. The agent side talks to the child over a
-Unix socket the child creates with mode 600; every connection is checked
-against the peer's user id (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on
-macOS), and a peer running as another user gets no answer. A platform with
-no way to name the peer (Windows, until its named-pipe port lands) is
-refused outright rather than served unauthenticated. The
-gatekeeper holds its own copy of the rules (a snapshot taken at start), the
-persistent grants file, and the signing key. It re-evaluates each call with
-its own rules instead of trusting the advice the agent computed, checks its
-own grants, signs the audit entry, and answers allow, ask or deny. The
-request carries the call's arguments so the rules see them, but the audit
-entry records only their shapes, never their values, and the key never
-crosses the socket in either direction. Unknown requests are refused with a
-reason, and a dead gatekeeper is a refusal, not a silent allow.
+When it is on, the app spawns the gatekeeper as a child process at startup
+and stops it at shutdown. An app that asked for it does not start without
+it: no key, a platform that cannot name its peer, or a child that will not
+start all stop startup rather than letting the agent run ungated. The key is
+handed over on a file descriptor at spawn; in production the child reads it
+from the OS keychain instead (service dev.nanomuse, account
+gatekeeper-audit-key, provisioned by `nanomuse sentinel gatekeeper-keygen`).
+There is no file fallback. The agent side talks to the child over a Unix
+socket the child creates with mode 600; every connection is checked against
+the peer's user id (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS), and
+a peer running as another user gets no answer. Windows is refused outright
+until its named-pipe port lands, rather than served unauthenticated. On
+macOS a socket path is limited to about 100 characters, so a deep data
+directory needs `[sentinel] gatekeeper_socket` set to a shorter path.
 
-The prototype's tests check that its decisions match the in-process policy
-across the same decision matrix, that a grant recorded before a restart is
-still honoured, that a forged audit entry does not verify against its key,
-that starting without a key fails closed, and that the local round trip
-stays under 20ms at the 95th percentile. Wiring it into the agent, reloading
-the rules without a restart, and separating the user the gatekeeper runs as
-are later steps.
+Every tool call is consulted before anything runs, and the answers fold in
+conservatively:
+
+- Its deny is final. No local permission or prompt settles it.
+- A standing permission it holds settles a call the local policy would have
+  asked about. Both sides read the same approvals file, and when the person
+  gives a standing permission at the prompt, the Sentinel mirrors it to the
+  gatekeeper (a new `grant` request) so its store can settle the next call.
+- Its ask makes the call ask even where the local policy would not; the
+  local flow then runs, prompt included.
+- It never loosens a local deny, and a bare agreement from its own policy
+  copy does not settle a local ask: only its permissions do.
+- A gatekeeper that cannot be reached refuses the call. There is no silent
+  fallback to the local policy.
+
+The gatekeeper holds a snapshot of the rules taken at start (editing rules
+means restarting the app), re-evaluates each call with its own copy instead
+of trusting the advice the agent computed, and signs its decision into its
+own audit log (`gatekeeper-audit.jsonl` in the data directory, a separate
+chain from the app's execution log). The request carries the call's
+arguments so the rules see them, but its audit entry records only their
+shapes, never their values, and the key never crosses the socket in either
+direction.
+
+What is not covered yet: the per-app permission prompt for the hands
+(`allow_app`) still settles locally, reloading the rules without a restart,
+and running the gatekeeper as a different OS user.
 
 ## What this does and does not protect against
 
