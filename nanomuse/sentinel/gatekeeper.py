@@ -42,7 +42,7 @@ from typing import Any
 from nanomuse.config import SentinelSettings
 from nanomuse.logger import logger
 from nanomuse.sentinel.audit import AuditLog, HmacSigner, _canonical
-from nanomuse.sentinel.grants import GrantStore, grant_key
+from nanomuse.sentinel.grants import GrantStore, grant_key, normalize_scope
 from nanomuse.sentinel.policy import Decision, Policy
 from nanomuse.tools.base import CallAssessment
 
@@ -291,6 +291,8 @@ class GatekeeperServer:
                 return {"id": req_id, "ok": True}
             if op == "decide":
                 return self._decide(req_id, request)
+            if op == "grant":
+                return self._grant(req_id, request)
             if op == "verify":
                 return self._verify(req_id, request)
             return {"id": req_id, "error": f"unknown op {str(op)[:40]!r}"}
@@ -338,6 +340,25 @@ class GatekeeperServer:
             "grant_scope": scope,
             "audit_seq": entry["seq"],
         }
+
+    def _grant(self, req_id: Any, request: dict[str, Any]) -> dict[str, Any]:
+        """Record a standing permission the person just gave at the prompt.
+
+        The prompt itself happens on the agent side, which owns the UI; the
+        grant belongs here, with the key, so the next decide can settle on it.
+        A one-off approval stores nothing, exactly like the local store."""
+        tool = str(request.get("tool") or "")
+        if not tool:
+            raise GatekeeperError("a grant needs a tool")
+        scope = normalize_scope(request.get("scope"))
+        if scope == "once":
+            return {"id": req_id, "ok": True, "stored": False}
+        target = request.get("target")
+        target = str(target)[:300] if target else None
+        conversation = request.get("conversation")
+        conversation = str(conversation)[:200] if conversation else None
+        self.grants.add(tool, target, scope, conversation)
+        return {"id": req_id, "ok": True, "stored": True, "key": grant_key(tool, target)}
 
     def _verify(self, req_id: Any, request: dict[str, Any]) -> dict[str, Any]:
         entry = request.get("entry")
@@ -431,6 +452,28 @@ class GatekeeperClient:
             grant_scope=response.get("grant_scope"),
             audit_seq=response.get("audit_seq"),
         )
+
+    def grant(
+        self,
+        tool: str,
+        target: str | None,
+        scope: str,
+        conversation: str | None = None,
+    ) -> bool:
+        """Hand a standing permission the person just gave to the gatekeeper,
+        whose grant store is the one its decisions settle on. Returns whether
+        anything was stored (a one-off approval stores nothing)."""
+        response = self._call(
+            {
+                "id": f"grant-{time.monotonic_ns()}",
+                "op": "grant",
+                "tool": tool,
+                "target": target,
+                "scope": scope,
+                "conversation": conversation,
+            }
+        )
+        return bool(response.get("stored"))
 
     def verify_entry(self, entry: dict[str, Any]) -> bool:
         response = self._call({"id": "verify", "op": "verify", "entry": entry})
