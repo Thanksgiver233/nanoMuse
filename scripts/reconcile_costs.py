@@ -6,9 +6,12 @@ importers and the comparison live there.  The ledger (``--ledger``)
 is the persisted JSONL file ``nanomuse.cost.store`` appends, or a
 JSON array of the same rows.  The bill (``--bill``, repeatable) is a
 saved vendor export recognised by its shape: the hand-written fixture
-JSON, an OpenAI usage or costs export, an Anthropic usage report, or
-a CSV with model, token, and cost columns.  Usage and costs exports
-from the same vendor merge by model when both are passed.
+JSON, an OpenAI usage or costs export, an Anthropic usage report,
+a CSV with model, token, and cost columns, or a balance snapshot
+pair (one model, the account balances before and after a run window)
+for a vendor that reports a balance but no usage history.  Usage and
+costs exports from the same vendor merge by model when both are
+passed.
 
 When the bill carries its own amounts, the ledger is checked against
 those amounts: the real reconciliation.  When it does not, the bill's
@@ -50,10 +53,16 @@ __all__ = ["compare_amounts", "compare", "load_prices", "price_bill"]
 
 
 def _format_row(row: dict) -> str:
+    if row["tokens_compared"]:
+        token_part = (
+            f"tokens ledger {row['ledger_input_tokens']}/{row['ledger_output_tokens']} "
+            f"bill {row['bill_input_tokens']}/{row['bill_output_tokens']} "
+            f"error {row['token_relative_error']:.2%}"
+        )
+    else:
+        token_part = "tokens not compared (balance snapshot: the amount is the check)"
     line = (
-        f"{row['model']}: tokens ledger {row['ledger_input_tokens']}/{row['ledger_output_tokens']} "
-        f"bill {row['bill_input_tokens']}/{row['bill_output_tokens']} "
-        f"error {row['token_relative_error']:.2%} | "
+        f"{row['model']}: {token_part} | "
         f"cost ledger {row['ledger_usd']:.6f} bill {row['bill_usd']:.6f} "
         f"error {row['cost_relative_error']:.2%}"
     )
@@ -88,11 +97,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"bill period: {result['bill_period']} (source: {result['bill_source']})")
         for row in result["models"]:
             print(_format_row(row))
+        if result["total_token_relative_error"] is not None:
+            token_error_text = f"{result['total_token_relative_error']:.2%}"
+        else:
+            token_error_text = "n/a"
         print(
             f"total: tokens ledger {result['total_ledger_input_tokens']}/"
             f"{result['total_ledger_output_tokens']} "
             f"bill {result['total_bill_input_tokens']}/{result['total_bill_output_tokens']} "
-            f"error {result['total_token_relative_error']:.2%} | "
+            f"error {token_error_text} | "
             f"cost ledger {result['total_ledger_usd']:.6f} "
             f"bill {result['total_bill_usd']:.6f} "
             f"error {result['total_cost_relative_error']:.2%}"

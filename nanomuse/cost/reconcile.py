@@ -25,7 +25,18 @@ vendor admin APIs, recognised by the shape of their contents:
   only lines up when the price table is kept in yuan as well; the
   token check does not care about currency;
 * a plain CSV with ``model,input_tokens,output_tokens,cost_usd``
-  columns (the cost column may be absent).
+  columns (the cost column may be absent);
+* a balance snapshot pair, saved as one small JSON object with
+  ``model``, ``balance_before`` and ``balance_after`` fields, for a
+  vendor whose API reports the account balance but no usage history
+  (SiliconFlow is one): the balances are read before and after a run
+  window in which only the reconciled key and model were used, and
+  the drop is the amount the vendor actually charged.  The snapshot
+  carries no token counts, so the token check is reported as not
+  applicable for its models and the amount is the check: because the
+  ledger amount is priced from the ledger's own token counts at the
+  vendor's published prices, a metering error on either side moves
+  the amount and is caught there.
 
 Nothing here talks to a vendor: the exports are files the person saved
 from a console or an API call of their own.  When a bill carries its
@@ -75,11 +86,15 @@ class BillTotals:
     ``cost_usd`` is None when the bill carried no amount for the model
     at all; a partial amount (some rows priced, some not) is summed
     from the rows that carried one and still counts as a bill amount.
+    ``tokens_known`` is False when the bill shape carries an amount
+    but no token counts (a balance snapshot pair): its token figures
+    are placeholders, not measurements, and are never compared.
     """
 
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float | None = None
+    tokens_known: bool = True
 
 
 @dataclass(frozen=True)
@@ -98,24 +113,31 @@ class _BillAccum:
     output_tokens: int = 0
     cost_usd: float = 0.0
     has_cost: bool = False
+    tokens_known: bool = False
 
     def add(
         self,
         input_tokens: int,
         output_tokens: int,
         cost_usd: float | None,
+        tokens_known: bool = True,
     ) -> None:
         self.input_tokens += input_tokens
         self.output_tokens += output_tokens
         if cost_usd is not None:
             self.cost_usd += cost_usd
             self.has_cost = True
+        # Known when any contribution carried real token counts: a
+        # merge of a token export with an amount-only source keeps
+        # the tokens the export measured.
+        self.tokens_known = self.tokens_known or tokens_known
 
     def totals(self) -> BillTotals:
         return BillTotals(
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
             cost_usd=self.cost_usd if self.has_cost else None,
+            tokens_known=self.tokens_known,
         )
 
 
@@ -125,8 +147,9 @@ def _accumulate(
     input_tokens: int,
     output_tokens: int,
     cost_usd: float | None,
+    tokens_known: bool = True,
 ) -> None:
-    accums.setdefault(model, _BillAccum()).add(input_tokens, output_tokens, cost_usd)
+    accums.setdefault(model, _BillAccum()).add(input_tokens, output_tokens, cost_usd, tokens_known)
 
 
 def _finish(accums: dict[str, _BillAccum]) -> dict[str, BillTotals]:
@@ -228,6 +251,8 @@ def import_bill(path: Path) -> BillImport:
         raise ReconcileError(f"{path}: not valid JSON and not a .csv file: {exc}") from exc
     if not isinstance(data, dict):
         raise ReconcileError(f"{path}: unrecognised bill format (top level is not an object)")
+    if "balance_before" in data or "balance_after" in data:
+        return _import_balance_diff(data, path)
     if isinstance(data.get("entries"), list):
         return _import_fixture(data)
     buckets = data.get("data")
@@ -252,7 +277,14 @@ def merge_bills(imports: list[BillImport]) -> BillImport:
             if period not in periods:
                 periods.append(period)
         for model, totals in bill.totals.items():
-            _accumulate(accums, model, totals.input_tokens, totals.output_tokens, totals.cost_usd)
+            _accumulate(
+                accums,
+                model,
+                totals.input_tokens,
+                totals.output_tokens,
+                totals.cost_usd,
+                tokens_known=totals.tokens_known,
+            )
     return BillImport(
         totals=_finish(accums),
         period=periods[0] if len(periods) == 1 else None,
@@ -282,6 +314,39 @@ def _import_fixture(data: dict[str, Any]) -> BillImport:
         periods=periods,
         source="fixture",
     )
+
+
+def _import_balance_diff(data: dict[str, Any], path: Path) -> BillImport:
+    """One balance snapshot pair: the spend is the drop in balance.
+
+    The shape is ours, written by whoever ran the window: the model
+    that ran, the balances the vendor reported before and after, and
+    the currency those balances are in.  Only the drop is reconciled.
+    A balance that rose inside the window means something else moved
+    money (a top-up or a grant), so the pair is refused rather than
+    silently reconciled against the wrong window.
+    """
+    model = data.get("model")
+    if not isinstance(model, str) or not model.strip():
+        raise ReconcileError(f"{path}: a balance snapshot has no model field")
+    try:
+        before = float(data["balance_before"])
+        after = float(data["balance_after"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ReconcileError(
+            f"{path}: a balance snapshot needs numeric balance_before and "
+            f"balance_after fields: {exc}"
+        ) from exc
+    if after > before:
+        raise ReconcileError(
+            f"{path}: the balance rose from {before} to {after} inside the "
+            "window, so the pair is not a spend measurement"
+        )
+    currency = str(data.get("currency") or "").strip().lower()
+    source = f"balance-diff-{currency}" if currency else "balance-diff"
+    accums: dict[str, _BillAccum] = {}
+    _accumulate(accums, model.strip(), 0, 0, before - after, tokens_known=False)
+    return BillImport(totals=_finish(accums), period=None, periods=(), source=source)
 
 
 def _import_openai(data: dict[str, Any], path: Path) -> BillImport:
@@ -489,20 +554,25 @@ def compare(
 ) -> dict[str, Any]:
     """Compare ledger totals against a bill, per model and in total.
 
-    Token counts are always compared directly.  Amounts come from the
-    bill itself when the bill carried them; when it did not, the
-    bill's tokens are priced with ``prices`` and the row is marked
-    ``priced_from_table``.
+    Token counts are compared directly whenever the bill carried
+    them.  A bill shape that carries an amount but no token counts (a
+    balance snapshot pair) reports its token check as not applicable
+    instead of comparing against placeholder zeros: its amount is
+    the check.  Amounts come from the bill itself when the bill
+    carried them; when it did not, the bill's tokens are priced with
+    ``prices`` and the row is marked ``priced_from_table``.
     """
     models = sorted(set(ledger_totals) | set(bill.totals))
     rows: list[dict[str, Any]] = []
     for model in models:
         ledger = ledger_totals.get(model, LedgerTotals())
         billed = bill.totals.get(model, BillTotals())
-        token_error = max(
-            _relative_error(ledger.input_tokens, billed.input_tokens),
-            _relative_error(ledger.output_tokens, billed.output_tokens),
-        )
+        token_error: float | None = None
+        if billed.tokens_known:
+            token_error = max(
+                _relative_error(ledger.input_tokens, billed.input_tokens),
+                _relative_error(ledger.output_tokens, billed.output_tokens),
+            )
         if billed.cost_usd is not None:
             bill_usd = billed.cost_usd
             priced_from_table = False
@@ -518,25 +588,37 @@ def compare(
                 "ledger_output_tokens": ledger.output_tokens,
                 "bill_input_tokens": billed.input_tokens,
                 "bill_output_tokens": billed.output_tokens,
-                "token_relative_error": round(token_error, 6),
+                "tokens_compared": billed.tokens_known,
+                "token_relative_error": round(token_error, 6) if token_error is not None else None,
                 "ledger_usd": round(ledger.cost_usd, 6),
                 "bill_usd": round(bill_usd, 6),
                 "cost_relative_error": round(cost_error, 6),
                 "priced_from_table": priced_from_table,
-                "within_tolerance": token_error <= tolerance and cost_error <= tolerance,
+                "within_tolerance": (token_error is None or token_error <= tolerance)
+                and cost_error <= tolerance,
             }
         )
     total_ledger_tokens_in = sum(t.input_tokens for t in ledger_totals.values())
     total_bill_tokens_in = sum(t.input_tokens for t in bill.totals.values())
     total_ledger_tokens_out = sum(t.output_tokens for t in ledger_totals.values())
     total_bill_tokens_out = sum(t.output_tokens for t in bill.totals.values())
-    total_token_error = max(
-        _relative_error(total_ledger_tokens_in, total_bill_tokens_in),
-        _relative_error(total_ledger_tokens_out, total_bill_tokens_out),
-    )
+    compared = [m for m in models if bill.totals.get(m, BillTotals()).tokens_known]
+    total_token_error: float | None = None
+    if compared:
+        total_token_error = max(
+            _relative_error(
+                sum(ledger_totals.get(m, LedgerTotals()).input_tokens for m in compared),
+                sum(bill.totals.get(m, BillTotals()).input_tokens for m in compared),
+            ),
+            _relative_error(
+                sum(ledger_totals.get(m, LedgerTotals()).output_tokens for m in compared),
+                sum(bill.totals.get(m, BillTotals()).output_tokens for m in compared),
+            ),
+        )
     total_ledger_usd = sum(t.cost_usd for t in ledger_totals.values())
     total_bill_usd = sum(float(row["bill_usd"]) for row in rows)
     total_cost_error = _relative_error(total_ledger_usd, total_bill_usd)
+    checked_errors = [e for e in (total_token_error, total_cost_error) if e is not None]
     return {
         "models": rows,
         "bill_source": bill.source,
@@ -546,12 +628,14 @@ def compare(
         "total_ledger_output_tokens": total_ledger_tokens_out,
         "total_bill_input_tokens": total_bill_tokens_in,
         "total_bill_output_tokens": total_bill_tokens_out,
-        "total_token_relative_error": round(total_token_error, 6),
+        "total_token_relative_error": round(total_token_error, 6)
+        if total_token_error is not None
+        else None,
         "total_ledger_usd": round(total_ledger_usd, 6),
         "total_bill_usd": round(total_bill_usd, 6),
         "total_cost_relative_error": round(total_cost_error, 6),
-        "total_relative_error": round(max(total_token_error, total_cost_error), 6),
-        "within_tolerance": total_token_error <= tolerance
+        "total_relative_error": round(max(checked_errors), 6),
+        "within_tolerance": (total_token_error is None or total_token_error <= tolerance)
         and total_cost_error <= tolerance
         and all(row["within_tolerance"] for row in rows),
     }

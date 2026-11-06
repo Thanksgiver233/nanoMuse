@@ -313,6 +313,38 @@ def test_import_deepseek_cost_and_merge_with_amount(tmp_path: Path) -> None:
     assert totals.cost_usd == pytest.approx(4.0)  # 1.25 paid + 2.75 granted, yuan
 
 
+BALANCE_DIFF = {
+    "model": "qwen",
+    "balance_before": 14.0,
+    "balance_after": 13.4,
+    "currency": "CNY",
+}
+
+
+def test_import_balance_diff_takes_the_drop_as_the_amount(tmp_path: Path) -> None:
+    imported = import_bill(write_json(tmp_path / "balance.json", BALANCE_DIFF))
+    assert imported.source == "balance-diff-cny"
+    totals = imported.totals["qwen"]
+    assert totals.cost_usd == pytest.approx(0.6)  # 14.0 - 13.4
+    assert totals.input_tokens == 0
+    assert totals.tokens_known is False  # an amount, but no token counts
+
+
+def test_import_balance_diff_rejects_a_balance_that_rose(tmp_path: Path) -> None:
+    path = write_json(
+        tmp_path / "balance.json",
+        {"model": "qwen", "balance_before": 13.4, "balance_after": 14.0},
+    )
+    with pytest.raises(ReconcileError, match="rose"):
+        import_bill(path)
+
+
+def test_import_balance_diff_rejects_a_missing_model(tmp_path: Path) -> None:
+    path = write_json(tmp_path / "balance.json", {"balance_before": 14.0, "balance_after": 13.4})
+    with pytest.raises(ReconcileError, match="no model"):
+        import_bill(path)
+
+
 def test_import_bill_rejects_an_unrecognised_shape(tmp_path: Path) -> None:
     path = write_json(tmp_path / "mystery.json", {"hello": "world"})
     with pytest.raises(ReconcileError):
@@ -410,6 +442,42 @@ def test_compare_fails_on_tokens_even_when_amounts_match(
     result = compare(ledger, bill, price_table, 0.05)
     assert result["models"][0]["cost_relative_error"] == 0.0
     assert result["models"][0]["token_relative_error"] == pytest.approx(1.0)
+    assert result["within_tolerance"] is False
+
+
+def test_compare_balance_diff_checks_the_amount_and_skips_tokens(
+    tmp_path: Path, price_table: dict[str, PriceEntry]
+) -> None:
+    # The ledger's 0.60 is priced from its own token counts at the
+    # vendor's published prices; the balance dropped by exactly that.
+    # The snapshot carries no token counts, so there is no token
+    # error to report, and the amount alone decides.
+    ledger = load_ledger(
+        write_json(
+            tmp_path / "ledger.json",
+            [ledger_row("qwen", 200_000, 25_000, 0.6, "2026-11")],
+        )
+    )
+    bill = import_bill(write_json(tmp_path / "balance.json", BALANCE_DIFF))
+    result = compare(ledger, bill, price_table, 0.05)
+    row = result["models"][0]
+    assert row["tokens_compared"] is False
+    assert row["token_relative_error"] is None
+    assert row["bill_usd"] == pytest.approx(0.6)
+    assert row["cost_relative_error"] == 0.0
+    assert result["total_token_relative_error"] is None
+    assert result["within_tolerance"] is True
+
+
+def test_compare_balance_diff_fails_on_the_amount_alone(
+    tmp_path: Path, price_table: dict[str, PriceEntry]
+) -> None:
+    ledger = load_ledger(
+        write_json(tmp_path / "ledger.json", [ledger_row("qwen", 200_000, 25_000, 0.5, "2026-11")])
+    )
+    bill = import_bill(write_json(tmp_path / "balance.json", BALANCE_DIFF))
+    result = compare(ledger, bill, price_table, 0.05)
+    assert result["models"][0]["cost_relative_error"] == pytest.approx(1 / 6, abs=1e-6)
     assert result["within_tolerance"] is False
 
 
@@ -511,6 +579,17 @@ def test_cli_month_filter_ignores_other_months(tmp_path: Path, priced: Path) -> 
         "2026-11",
     )
     assert filtered.returncode == 0
+
+
+def test_cli_balance_diff_exits_zero_on_a_matching_amount(tmp_path: Path) -> None:
+    ledger = write_json(
+        tmp_path / "ledger.json", [ledger_row("qwen", 200_000, 25_000, 0.6, "2026-11")]
+    )
+    bill = write_json(tmp_path / "balance.json", BALANCE_DIFF)
+    result = run_cli("--ledger", str(ledger), "--bill", str(bill))
+    assert result.returncode == 0
+    assert "not compared" in result.stdout
+    assert "error n/a" in result.stdout
 
 
 def test_cli_exits_two_on_a_missing_file(tmp_path: Path, priced: Path) -> None:

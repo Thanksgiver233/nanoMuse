@@ -108,9 +108,14 @@ the two merge when both are given), an Anthropic usage report (cache
 creation and cache read tokens count as input, as the vendor bills
 them), a DeepSeek console export (an amount CSV with the token counts
 and a cost CSV with the amounts in yuan, the two merge when both are
-given), or a plain CSV with model, token, and cost columns. Per model
-it compares token counts and amounts, and reports both relative
-errors. When the bill carries its own amounts, those are what the
+given), a plain CSV with model, token, and cost columns, or a
+balance snapshot pair: one model and the account balances before
+and after a window in which only that model ran, for a vendor whose
+API reports a balance but no usage history (SiliconFlow is one).
+The drop in balance is the amount charged, and the token check is
+reported as not applicable for that model rather than compared
+against placeholder zeros. Per model it compares token counts and
+amounts, and reports both relative errors. When the bill carries its own amounts, those are what the
 ledger is checked against; when it does not, the bill's tokens are
 priced with the person's price table and the output marks the model
 as priced from the table. It exits 0 within tolerance (5 percent by
