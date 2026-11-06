@@ -8,12 +8,16 @@ the same entries three ways, and a monthly budget raises one alert
 record when spending reaches its threshold.  The alert is a record,
 not a block: the ledger reports, it never refuses work.
 
-No real vendor bill is read here.  Reconciling against a real bill is
-a separate script (``scripts/reconcile_costs.py``) and, for real
-bills, still undone.  Since Phase 6 the entries themselves are real:
-``nanomuse.cost.recording`` feeds this ledger from finished runs and
-``nanomuse.cost.store`` persists it; what remains fixture-only is the
-reconciliation against a vendor invoice.
+No vendor bill is read here.  Reconciliation lives in
+``nanomuse.cost.reconcile`` (the command line is
+``scripts/reconcile_costs.py``): it reads this ledger's persisted
+JSONL file and saved vendor usage and costs exports, and compares
+token counts and amounts per model.  Since Phase 6 the entries
+themselves are real: ``nanomuse.cost.recording`` feeds this ledger
+from finished runs and ``nanomuse.cost.store`` persists it.  The
+reconciliation tooling accepts real exports now, but no real vendor
+export has been run through it yet, so that Gate item stays unmet
+until one is.
 """
 
 from __future__ import annotations
