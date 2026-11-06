@@ -31,6 +31,8 @@ from nanomuse.background import spawn
 from nanomuse.bridge.server import Bridge
 from nanomuse.cloud import CLOUD_KEY, DEFAULT_CHAT_MODEL, CloudError, model_url
 from nanomuse.coding.service import CodingService
+from nanomuse.companion.factory import build_runtime as build_companion_runtime
+from nanomuse.companion.service import CompanionService
 from nanomuse.config import LLMSettings, Settings
 from nanomuse.goals import Goal
 from nanomuse.hub.service import HubService
@@ -466,6 +468,13 @@ class MuseService:
         self.hub = HubService(self)
         # the same conversations on every device of the account (contract C7; docs/every-device.md)
         self.sync = ConversationSync(self)
+        # the always-on companion (docs/always-on.md): built from the [companion]
+        # settings, started with the service when enabled; off by default
+        self.companion = CompanionService(
+            build_companion_runtime(settings),
+            publish=self.bus.publish,
+            poll_seconds=settings.companion.poll_seconds,
+        )
         # when the app may ask for a star on GitHub: the relay's policy, a day at a time
         # (contract C1; GET /api/nudges hands it to the web app)
         self.nudges = NudgesPolicy(self.data_dir, settings.cloud.base_url)
@@ -502,6 +511,9 @@ class MuseService:
     def phone_view(self) -> dict[str, Any]:
         return {**self.phone.status(), "gui_enabled": self.settings.gui.enabled}
 
+    def companion_view(self) -> dict[str, Any]:
+        return self.companion.view()
+
     def publish_phone(self) -> None:
         self.bus.publish({"kind": "phone", "phone": self.phone_view()})
 
@@ -530,6 +542,8 @@ class MuseService:
         self._recover_deliveries()
         await self._step("cloud account and hub", self.hub.start(), 30)
         self.sync.start()
+        if self.companion.runtime.enabled:
+            await self._step("companion", self.companion.start(), 10)
         self._scheduler = asyncio.create_task(self._goal_scheduler(), name="goal-scheduler")
         self.starting = ""
         logger.info(
@@ -551,6 +565,7 @@ class MuseService:
             logger.warning("starting: {} failed: {}: {}", name, type(exc).__name__, exc)
 
     async def stop(self) -> None:
+        await self.companion.stop()
         loop = asyncio.get_running_loop()
         workers: list[asyncio.Task[None]] = []
         scheduler = self._scheduler

@@ -475,12 +475,18 @@ class MuseAgent:
                 # Feed the cost ledger from the real run; bookkeeping only, so a
                 # ledger failure never reaches the finished task.
                 try:
+                    # The ledger names the model that ran: the one in
+                    # the llm's own settings.  The client's ``name`` is
+                    # the wrapper's label (the prompt adapter's is
+                    # "prompt_tools"), never a model id, so it is only
+                    # a last resort: pricing by it missed every real
+                    # model and recorded zero costs.
                     cost_recording.record_finished_task(
                         task_id=self.conversation_id or self.session_id,
-                        model=(
-                            getattr(self.llm, "model", None)
-                            or getattr(self.llm, "name", "")
+                        model=str(
+                            getattr(getattr(self.llm, "settings", None), "model", None)
                             or self.settings.llm.model
+                            or getattr(self.llm, "name", "")
                         ),
                         snapshot=self.last_budget,
                     )
