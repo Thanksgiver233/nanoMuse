@@ -1,4 +1,4 @@
-"""Privilege separation, Linux prototype: the gatekeeper holds the keys.
+"""Privilege separation: the gatekeeper holds the keys (Linux and macOS).
 
 One process, the gatekeeper, holds three things the agent process must never
 touch: the Sentinel rules (as a settings snapshot loaded once at start), the
@@ -65,13 +65,18 @@ class GatekeeperError(RuntimeError):
     pass
 
 
-# ------------------------------------------- platform prerequisites (Linux only)
+# ------------------------------------------- platform prerequisites
+# The gatekeeper runs where a Unix socket can name its peer: Linux
+# (SO_PEERCRED) and macOS (LOCAL_PEERCRED).  Anywhere else it refuses
+# to start rather than serve a socket it cannot authenticate.
+_PLATFORM = sys.platform
+
+
 def _unix_socket_family() -> int:
     """The Unix domain socket family, or a refusal where it does not exist.
 
     Resolved through getattr: the attribute is absent from the stubs on
-    platforms without Unix sockets, so naming it directly fails mypy there
-    even though this prototype only ever runs on Linux."""
+    platforms without Unix sockets, so naming it directly fails mypy there."""
 
     family = getattr(socket, "AF_UNIX", None)
     if family is None:
@@ -80,12 +85,54 @@ def _unix_socket_family() -> int:
 
 
 def _peer_cred_option() -> int:
-    """The socket option that reads a Unix peer's credentials, or a refusal."""
+    """The Linux socket option that reads a Unix peer's credentials, or a refusal."""
 
     option = getattr(socket, "SO_PEERCRED", None)
     if option is None:
         raise GatekeeperError("SO_PEERCRED is unavailable on this platform")
     return option
+
+
+def _local_peercred() -> tuple[int, int]:
+    """The macOS (level, option) pair that reads a Unix peer's credentials.
+
+    SOL_LOCAL and LOCAL_PEERCRED are stable Darwin ABI constants (0 and
+    1); the socket module does not promise to name them, so they are
+    resolved through getattr with the ABI values as the fallback."""
+
+    level = getattr(socket, "SOL_LOCAL", 0)
+    option = getattr(socket, "LOCAL_PEERCRED", 1)
+    return level, option
+
+
+# struct xucred: version (u_short, offset 0), uid (uid_t, offset 4),
+# then the group list; 76 bytes in all.
+_XUCRED_SIZE = 76
+_XUCRED_UID_OFFSET = 4
+
+
+def _peer_uid(conn: socket.socket) -> int:
+    """The uid of the process on the other end of a Unix socket.
+
+    Linux answers SO_PEERCRED with a ucred (pid, uid, gid); macOS
+    answers LOCAL_PEERCRED with an xucred whose uid sits at offset 4.
+    A platform with neither is refused: an unauthenticated socket is
+    worse than no gatekeeper."""
+
+    try:
+        if _PLATFORM == "darwin":
+            level, option = _local_peercred()
+            raw = conn.getsockopt(level, option, _XUCRED_SIZE)
+            if len(raw) < _XUCRED_UID_OFFSET + 4:
+                raise GatekeeperError("the peer credential answer was truncated")
+            return struct.unpack_from("=I", raw, _XUCRED_UID_OFFSET)[0]
+        if _PLATFORM.startswith("linux"):
+            raw = conn.getsockopt(socket.SOL_SOCKET, _peer_cred_option(), struct.calcsize("3i"))
+            _pid, uid, _gid = struct.unpack("3i", raw)
+            return uid
+    except OSError as exc:
+        raise GatekeeperError(f"cannot read the peer credential: {exc}") from exc
+    raise GatekeeperError(f"no peer credential API on this platform ({_PLATFORM})")
 
 
 def _own_uid() -> int:
@@ -180,12 +227,7 @@ class GatekeeperServer:
 
     # ------------------------------------------------------------------ socket
     def _peer_uid(self, conn: socket.socket) -> int:
-        try:
-            raw = conn.getsockopt(socket.SOL_SOCKET, _peer_cred_option(), struct.calcsize("3i"))
-        except OSError as exc:
-            raise GatekeeperError(f"cannot read the peer credential: {exc}") from exc
-        _pid, uid, _gid = struct.unpack("3i", raw)
-        return uid
+        return _peer_uid(conn)
 
     def serve_forever(self) -> None:
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
