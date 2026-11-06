@@ -164,6 +164,7 @@ def test_gate_without_a_budget_never_blocks() -> None:
 
 def test_a_real_run_lands_in_the_ledger(tmp_path: Path) -> None:
     settings = Settings(data_dir=tmp_path)
+    settings.llm.model = "mock"  # the configured model is what the ledger names
     ui = HeadlessUI()
     audit = AuditLog(settings.audit_file)
     llm = MockLLM([LLMResponse(content="ok", usage={"input_tokens": 1000, "output_tokens": 500})])
@@ -181,6 +182,36 @@ def test_a_real_run_lands_in_the_ledger(tmp_path: Path) -> None:
     assert entry.device_id == "test-box"
     assert entry.model == "mock"
     assert entry.input_tokens > 0
+    assert entry.cost_usd > 0
+
+
+def test_a_prompt_mode_run_records_the_configured_model(tmp_path: Path) -> None:
+    # In prompt mode the llm is the prompt adapter, whose name is
+    # "prompt_tools".  The ledger must still name (and price) the
+    # configured model; pricing by the adapter's name recorded real
+    # runs at zero cost.
+    from nanomuse.llm.prompt_tools import PromptToolAdapter
+
+    settings = Settings(data_dir=tmp_path)
+    settings.llm.model = "mock"
+    ui = HeadlessUI()
+    audit = AuditLog(settings.audit_file)
+    inner = MockLLM([LLMResponse(content="ok", usage={"input_tokens": 1000, "output_tokens": 500})])
+    llm = PromptToolAdapter(inner)
+    assert llm.name == "prompt_tools"
+    agent = MuseAgent(
+        settings, llm, ToolCollection(), Sentinel(settings.sentinel, audit, ui), ui, audit
+    )
+    book = CostLedger(prices={"mock": PriceEntry("mock", 2.0, 8.0)})
+    recording.install(TaskCostRecorder(book, device_id="test-box"))
+    try:
+        asyncio.run(agent.run("say something"))
+    finally:
+        recording.install(None)
+    assert len(book.entries) == 1
+    entry = book.entries[0]
+    assert entry.model == "mock"
+    assert entry.cost_usd == pytest.approx(0.006)  # 1000 in, 500 out at [2.0, 8.0]
 
 
 def test_hard_gate_refuses_a_run_before_it_starts(tmp_path: Path) -> None:
