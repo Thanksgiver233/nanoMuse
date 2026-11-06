@@ -9,7 +9,6 @@ import secrets
 import signal
 import socket
 import statistics
-import struct
 import sys
 import time
 import types
@@ -29,8 +28,10 @@ from nanomuse.sentinel.gatekeeper import (
     GatekeeperServer,
     GatekeeperSupervisor,
     GatekeeperUnavailable,
+    _local_peercred,
     _own_uid,
     _peer_cred_option,
+    _peer_uid,
     _unix_socket_family,
     resolve_gatekeeper_key,
 )
@@ -92,13 +93,26 @@ _CASES = [
 ]
 
 
+_SUPPORTED = sys.platform == "linux" or sys.platform == "darwin"
+_UNSUPPORTED_REASON = "the gatekeeper needs Unix socket peer credentials (Linux or macOS)"
+
+
+def _socket_path(tmp_path: Path) -> Path:
+    path = tmp_path / "gatekeeper.sock"
+    if sys.platform == "darwin" and len(str(path)) > 100:
+        # Darwin caps a Unix socket path at 104 bytes; a deep pytest
+        # tmp_path would overflow it before the gatekeeper even binds.
+        return Path("/tmp") / f"nanomuse-gk-{os.getpid()}.sock"
+    return path
+
+
 @pytest.fixture()
 async def supervisor(tmp_path: Path):
-    if sys.platform != "linux":
-        pytest.skip("the gatekeeper prototype needs Linux socket APIs")
+    if not _SUPPORTED:
+        pytest.skip(_UNSUPPORTED_REASON)
     key = secrets.token_bytes(32)
     sup = GatekeeperSupervisor(
-        tmp_path / "gatekeeper.sock",
+        _socket_path(tmp_path),
         SETTINGS,
         tmp_path / "grants.json",
         tmp_path / "audit.jsonl",
@@ -136,9 +150,7 @@ def test_decisions_match_the_in_process_policy(supervisor, client):
         assert again.decision == advice.decision, (tool, args, tainted)
 
 
-@pytest.mark.skipif(
-    sys.platform != "linux", reason="the gatekeeper prototype needs Linux socket APIs"
-)
+@pytest.mark.skipif(not _SUPPORTED, reason=_UNSUPPORTED_REASON)
 async def test_a_persistent_grant_survives_a_restart(tmp_path: Path):
     from nanomuse.sentinel.grants import GrantStore
 
@@ -154,7 +166,7 @@ async def test_a_persistent_grant_survives_a_restart(tmp_path: Path):
     )
     key = secrets.token_bytes(32)
     sup = GatekeeperSupervisor(
-        tmp_path / "gatekeeper.sock", SETTINGS, grants_path, tmp_path / "audit.jsonl", key
+        _socket_path(tmp_path), SETTINGS, grants_path, tmp_path / "audit.jsonl", key
     )
     await sup.start()
     try:
@@ -223,15 +235,13 @@ def test_the_socket_reports_the_callers_own_credential(supervisor: GatekeeperSup
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(5)
     sock.connect(str(supervisor.socket_path))
-    raw = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
-    _pid, uid, _gid = struct.unpack("3i", raw)
-    assert uid == os.getuid()
+    assert _peer_uid(sock) == os.getuid()
     sock.close()
 
 
 async def test_the_gatekeeper_fails_closed_without_a_key(tmp_path: Path):
     sup = GatekeeperSupervisor(
-        tmp_path / "gatekeeper.sock",
+        _socket_path(tmp_path),
         SETTINGS,
         tmp_path / "grants.json",
         tmp_path / "audit.jsonl",
@@ -291,13 +301,11 @@ def test_the_ipc_round_trip_is_fast_enough_for_a_local_decision(
     assert p95 < 20, f"p95 {p95:.2f}ms exceeds the 20ms budget: {samples}"
 
 
-@pytest.mark.skipif(
-    sys.platform != "linux", reason="the gatekeeper prototype needs Linux socket APIs"
-)
+@pytest.mark.skipif(not _SUPPORTED, reason=_UNSUPPORTED_REASON)
 async def test_the_supervisor_restarts_a_crashed_gatekeeper(tmp_path: Path):
     key = secrets.token_bytes(32)
     sup = GatekeeperSupervisor(
-        tmp_path / "gatekeeper.sock",
+        _socket_path(tmp_path),
         SETTINGS,
         tmp_path / "grants.json",
         tmp_path / "audit.jsonl",
@@ -325,19 +333,23 @@ def test_gatekeeper_sentinel_front_end_matches_policy(supervisor, client):
         )
 
 
-@pytest.mark.skipif(
-    sys.platform != "linux", reason="the gatekeeper prototype needs Linux socket APIs"
-)
-def test_the_platform_helpers_find_the_linux_apis():
+@pytest.mark.skipif(not _SUPPORTED, reason=_UNSUPPORTED_REASON)
+def test_the_platform_helpers_find_the_platform_apis():
     assert _unix_socket_family() == socket.AF_UNIX
-    assert _peer_cred_option() == socket.SO_PEERCRED
     assert _own_uid() == os.getuid()
+    if sys.platform == "linux":
+        assert _peer_cred_option() == socket.SO_PEERCRED
+    else:  # darwin: SOL_LOCAL / LOCAL_PEERCRED, by name or by ABI value
+        level, option = _local_peercred()
+        assert level == getattr(socket, "SOL_LOCAL", 0)
+        assert option == getattr(socket, "LOCAL_PEERCRED", 1)
 
 
 def test_the_platform_helpers_refuse_where_the_apis_do_not_exist(monkeypatch):
     monkeypatch.delattr(socket, "AF_UNIX", raising=False)
     with pytest.raises(GatekeeperUnavailable, match="Unix domain sockets"):
         _unix_socket_family()
+    monkeypatch.setattr(gatekeeper, "_PLATFORM", "linux")
     monkeypatch.delattr(socket, "SO_PEERCRED", raising=False)
     with pytest.raises(GatekeeperError, match="SO_PEERCRED"):
         _peer_cred_option()
@@ -346,7 +358,7 @@ def test_the_platform_helpers_refuse_where_the_apis_do_not_exist(monkeypatch):
         _own_uid()
 
 
-def test_the_peer_credential_check_refuses_without_so_peercred(tmp_path: Path, monkeypatch):
+def test_the_peer_credential_check_refuses_without_a_platform_api(tmp_path: Path, monkeypatch):
     server = GatekeeperServer(
         tmp_path / "g.sock",
         SETTINGS,
@@ -356,8 +368,12 @@ def test_the_peer_credential_check_refuses_without_so_peercred(tmp_path: Path, m
     )
     one, other = socket.socketpair()
     try:
+        monkeypatch.setattr(gatekeeper, "_PLATFORM", "linux")
         monkeypatch.delattr(socket, "SO_PEERCRED", raising=False)
         with pytest.raises(GatekeeperError, match="SO_PEERCRED"):
+            server._peer_uid(one)
+        monkeypatch.setattr(gatekeeper, "_PLATFORM", "win32")
+        with pytest.raises(GatekeeperError, match="no peer credential API"):
             server._peer_uid(one)
     finally:
         one.close()

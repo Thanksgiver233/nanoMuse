@@ -125,7 +125,7 @@ process of its own) is a later step, not a claim made here.
 
 The app's activity sheet (tap the avatar) reads the same file.
 
-## Gatekeeper prototype (Linux, not the default)
+## Gatekeeper prototype (Linux and macOS, not the default)
 
 `nanomuse/sentinel/gatekeeper.py` is a first step toward the key separation
 the audit section above calls for, and it is a prototype on purpose: it is not
@@ -136,8 +136,11 @@ signing key on a file descriptor; when no key is passed at spawn, the child
 reads it from the OS keychain instead. There is no file fallback: with neither
 available the child refuses to start, and the agent side refuses the call
 rather than running it undecided. The agent side talks to the child over a
-Unix socket the child creates with mode 600; every connection is checked with
-`SO_PEERCRED`, and a peer running as another user gets no answer. The
+Unix socket the child creates with mode 600; every connection is checked
+against the peer's user id (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on
+macOS), and a peer running as another user gets no answer. A platform with
+no way to name the peer (Windows, until its named-pipe port lands) is
+refused outright rather than served unauthenticated. The
 gatekeeper holds its own copy of the rules (a snapshot taken at start), the
 persistent grants file, and the signing key. It re-evaluates each call with
 its own rules instead of trusting the advice the agent computed, checks its
