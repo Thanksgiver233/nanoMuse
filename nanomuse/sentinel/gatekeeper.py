@@ -444,7 +444,7 @@ def resolve_gatekeeper_key(key_fd: int | None) -> bytes:
     try:
         import keyring  # type: ignore[import-not-found]
     except ImportError:
-        keyring = None
+        keyring = None  # type: ignore[assignment]
     if keyring is not None:
         try:
             stored = keyring.get_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
@@ -471,7 +471,7 @@ def provision_gatekeeper_key() -> None:
     try:
         import keyring  # type: ignore[import-not-found]
     except ImportError:
-        keyring = None
+        keyring = None  # type: ignore[assignment]
     if keyring is None:
         raise GatekeeperUnavailable("the keyring package is not installed")
     try:
