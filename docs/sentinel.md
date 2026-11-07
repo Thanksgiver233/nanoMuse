@@ -120,8 +120,10 @@ vault key: it is injected, read from the OS keychain, or kept in its own
 access list is read instead, since Windows has no mode bits, and a file open
 to a broad group is refused). The
 chain is tamper-evident, not unforgeable: anyone who holds the device and the
-key can re-sign a whole chain, which is why key separation (a gatekeeper
-process of its own) is a later step, not a claim made here.
+key can re-sign a whole chain. Key separation is what the
+[gatekeeper](#gatekeeper-opt-in) below is for: it holds a key of its own, in a
+process of its own, and signs a chain of its own; this chain keeps the key
+arrangements described above either way.
 
 The app's activity sheet (tap the avatar) reads the same file.
 
@@ -183,7 +185,7 @@ and running the gatekeeper as a different OS user.
 
 ## What this does and does not protect against
 
-Meta Muse runs each user's agent in its own cloud VM with the Sentinel outside it. nanoMuse runs on your machine, as your user, and its Sentinel is a module in the same process. That changes what the safeguards can promise. Honest summary:
+Meta Muse runs each user's agent in its own cloud VM with the Sentinel outside it. nanoMuse runs on your machine, as your user, and its Sentinel is a module in the same process. That changes what the safeguards can promise. Honest summary (the structured version, with the assets, the actors and the boundaries, is the [threat model](threat-model.md)):
 
 **Covered**
 

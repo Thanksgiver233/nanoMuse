@@ -109,6 +109,7 @@ const runIt: DefaultTheme.SidebarItem[] = [
 const understandIt: DefaultTheme.SidebarItem[] = [
   { text: 'Architecture', link: '/architecture' },
   { text: 'Sentinel', link: '/sentinel' },
+  { text: 'Threat model', link: '/threat-model' },
   { text: 'Privacy', link: '/privacy' },
   { text: 'What stays on a phone, and whose it is', link: '/sync' },
   { text: 'The hub', link: '/hub' },
