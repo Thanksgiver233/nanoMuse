@@ -39,6 +39,7 @@ from nanomuse.sentinel.gatekeeper import GatekeeperClient, GatekeeperSupervisor
 from nanomuse.skills import SkillLibrary
 from nanomuse.tools import (
     AskUser,
+    BaseTool,
     Browser,
     Calendar,
     Contacts,
@@ -434,7 +435,35 @@ class NanoMuseApp:
             tools.add(*self.computer_tools())
         if s.browser.enabled:
             tools.add(self.browser_tool())
+        if s.cloud_pc.enabled:
+            tools.add(*self.cloud_pc_tools())
         return tools
+
+    def cloud_pc_tools(self) -> list[BaseTool]:
+        """The cloud computer tools (Phase 9, A1), over one shared runtime.
+
+        The provider key is resolved from the vault here, once; the tools
+        hold the client, never the key as a value they can print.
+        """
+        from nanomuse.tools.cloud_pc import build_cloud_tools
+
+        s = self.settings
+        key = s.cloud_pc.api_key
+        if key and self.vault is not None:
+            resolved = self.vault.resolve(key, strict=False)
+            if isinstance(resolved, str):
+                key = resolved
+        return build_cloud_tools(
+            provider=s.cloud_pc.provider,
+            api_key=key,
+            registry_path=s.data_dir / "cloud_pc.json",
+            workspace=s.agent.workspace,
+            monthly_budget_usd=s.cloud_pc.monthly_budget_usd or None,
+            gate_mode=s.cloud_pc.mode,
+            max_machines=s.cloud_pc.max_machines,
+            idle_timeout_minutes=s.cloud_pc.idle_timeout_minutes,
+            rate_per_vcpu_hour=s.cloud_pc.hourly_rate_per_vcpu_usd,
+        )
 
     def browser_tool(self) -> Browser:
         """The browser: Playwright here, or the phone's WebView through the phone link."""

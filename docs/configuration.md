@@ -449,6 +449,20 @@ A server that does not answer is logged and skipped, and the agent starts withou
 
 Three Chinese services the built-in skills know come as MCP servers, and `config/config.example.toml` has the block for each: 高德地图 (hosted, `AMAP_KEY` in the vault), 12306 (`npx -y 12306-mcp`, no key; trains, query only) and 快递100 (hosted, `KUAIDI100_KEY`; parcels, paid per tracking number). Which of them have actually been run inside the phone's root file system, and what else is out there: [services.md](services.md).
 
+## `[cloud_pc]`
+
+```toml
+[cloud_pc]
+enabled                = false     # cloud computers the agent can open and destroy (cloud-pc.md)
+provider               = "daytona" # the only provider so far
+api_key                = "{{vault:DAYTONA_API_KEY}}"  # literal or vault reference; resolved at startup
+monthly_budget_usd     = 0         # 0: no cloud budget set, the gate has nothing to read
+mode                   = "warn"    # the gate over recorded cloud spend: off | warn | hard
+max_machines           = 1         # live machines at once, across all tasks on this device
+idle_timeout_minutes   = 30        # provider auto-stop after this long idle
+hourly_rate_per_vcpu_usd = 0.0666  # the rate the spend record uses; measured, not a provider quote
+```
+
 ## `[server]`
 
 ```toml

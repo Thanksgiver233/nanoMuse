@@ -712,6 +712,31 @@ class CompanionSettings(BaseModel):
     poll_seconds: float = Field(default=15.0, ge=1.0)
 
 
+class CloudPcSettings(BaseModel):
+    """Cloud computers the agent can open, work in and destroy (Phase 9, line A).
+
+    Off by default. The provider is Daytona first: ``api_key`` is its key,
+    as a literal or a ``{{vault:NAME}}`` placeholder, resolved from the
+    vault at startup and never shown to the model. Machines bill from
+    create to destroy at ``hourly_rate_per_vcpu_usd`` times the vCPU
+    count; that rate is the account's effective rate as measured, not a
+    provider quote, and it is what the spend record and the budget gate
+    use until reconciling against provider bills lands (A2). ``mode`` is
+    the gate over that record: ``off`` records only, ``warn`` notes the
+    crossing on the create result, ``hard`` refuses a new machine once
+    the month's recorded cloud spend reaches ``monthly_budget_usd``.
+    """
+
+    enabled: bool = False
+    provider: str = "daytona"
+    api_key: str = ""
+    monthly_budget_usd: float = Field(default=0, ge=0, allow_inf_nan=False)
+    mode: Literal["off", "warn", "hard"] = "warn"
+    max_machines: int = Field(default=1, ge=1)
+    idle_timeout_minutes: int = Field(default=30, ge=1)
+    hourly_rate_per_vcpu_usd: float = Field(default=0.0666, gt=0, allow_inf_nan=False)
+
+
 class CostSettings(BaseModel):
     """The cost ledger over real runs, and the monthly budget gate.
 
@@ -752,6 +777,7 @@ class Settings(BaseModel):
     server: ServerSettings = Field(default_factory=ServerSettings)
     cost: CostSettings = Field(default_factory=CostSettings)
     companion: CompanionSettings = Field(default_factory=CompanionSettings)
+    cloud_pc: CloudPcSettings = Field(default_factory=CloudPcSettings)
     # Where the settings came from (informational).
     source: str | None = None
 

@@ -104,6 +104,7 @@ const runIt: DefaultTheme.SidebarItem[] = [
   { text: 'Configuration', link: '/configuration' },
   { text: 'Task budgets', link: '/runtime-budgets' },
   { text: 'nanoMuse Cloud, the relay', link: '/cloud' },
+  { text: 'Cloud computers', link: '/cloud-pc' },
 ]
 
 const understandIt: DefaultTheme.SidebarItem[] = [
