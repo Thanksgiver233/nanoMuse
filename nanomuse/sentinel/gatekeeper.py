@@ -818,10 +818,12 @@ class GatekeeperClient:
             err = ctypes.get_last_error()
             # Busy means every instance is taken; file not found means the
             # server is between instances, having just closed the previous
-            # connection and not yet created the next. Both clear within the
-            # deadline, so both are retried rather than reported.
+            # connection and not yet created the next. Both clear within a
+            # few milliseconds, so both are retried rather than reported, on
+            # a short sleep: a long one would spend the round-trip budget on
+            # every retry.
             if err in (_ERROR_PIPE_BUSY, _ERROR_FILE_NOT_FOUND) and time.monotonic() < deadline:
-                time.sleep(0.05)
+                time.sleep(0.002)
                 continue
             raise GatekeeperUnavailable(f"the gatekeeper cannot be reached (win32 error {err})")
         try:
