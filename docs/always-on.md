@@ -125,16 +125,20 @@ amounts, and reports both relative errors. When the bill carries its own amounts
 ledger is checked against; when it does not, the bill's tokens are
 priced with the person's price table and the output marks the model
 as priced from the table. It exits 0 within tolerance (5 percent by
-default), 1 beyond it, and 2 on a usage error. The Gate is still not
-met: the tooling reads real files now and a real DeepSeek export has
-been parsed and totalled, but a reconciliation also takes a ledger
-written by real runs, and there is none yet.
+default), 1 beyond it, and 2 on a usage error. The reconciliation
+Gate item has since been met: a window of real runs against
+SiliconFlow, using the balance snapshot pair (one model, balances
+read before and after), reconciled with the ledger's tokens matching
+the vendor's metered tokens exactly and the amount within 0.04
+percent of the charge, against the 5 percent tolerance.
 
 ## What is still missing
 
-An 8 hour shutdown test with a real deployment, and a real bill
-reconciliation. The IM vendor behind the channel port, the ledger
-entries and the server wiring are real now (Phase 6); their
-remaining Gate items are the deployment, the long test, and the
-vendor bill, and the test numbers for those are still fixture
-numbers, not measured capability.
+An 8 hour shutdown test with a real deployment: the long-run
+behaviour is covered by the compressed simulation, and the
+wall-clock soak is still outstanding. The bill reconciliation is
+done, as the cost section above describes. The companion's Hub
+transport between runtimes is still the in-memory fake, and the
+squad and sync v2 sections above still describe scaffolding: their
+shapes are the contract, and a real transport and a real squad run
+remain to be built.
