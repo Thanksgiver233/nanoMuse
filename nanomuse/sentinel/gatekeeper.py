@@ -187,6 +187,7 @@ _PIPE_READMODE_BYTE = 0x00000000
 _PIPE_WAIT = 0x00000000
 _PIPE_NOWAIT = 0x00000001
 _PIPE_UNLIMITED_INSTANCES = 255
+_ERROR_FILE_NOT_FOUND = 2
 _ERROR_PIPE_BUSY = 231
 _ERROR_NO_DATA = 232
 _ERROR_PIPE_CONNECTED = 535
@@ -811,7 +812,11 @@ class GatekeeperClient:
                 handle = candidate
                 break
             err = ctypes.get_last_error()
-            if err == _ERROR_PIPE_BUSY and time.monotonic() < deadline:
+            # Busy means every instance is taken; file not found means the
+            # server is between instances, having just closed the previous
+            # connection and not yet created the next. Both clear within the
+            # deadline, so both are retried rather than reported.
+            if err in (_ERROR_PIPE_BUSY, _ERROR_FILE_NOT_FOUND) and time.monotonic() < deadline:
                 time.sleep(0.05)
                 continue
             raise GatekeeperUnavailable(f"the gatekeeper cannot be reached (win32 error {err})")
