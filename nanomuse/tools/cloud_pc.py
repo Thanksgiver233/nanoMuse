@@ -2,8 +2,9 @@
 
 Six tools over one runtime (:class:`CloudRuntime`): ``cloud_create``,
 ``cloud_status``, ``cloud_exec``, ``cloud_file``, ``cloud_screenshot`` and
-``cloud_destroy``. The first provider is Daytona; the runtime is the seam a
-second provider slots behind (Phase 9, A2).
+``cloud_destroy``. The runtime talks to one provider behind the
+:class:`~nanomuse.cloud_pc.provider.CloudProvider` protocol (Daytona or
+InstaBox, chosen in the config); the tools never learn which.
 
 How the Sentinel sees them, set here rather than left to defaults:
 
@@ -27,8 +28,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from nanomuse.cloud_pc.daytona import CloudError, DaytonaClient
+from nanomuse.cloud_pc.daytona import CloudError
 from nanomuse.cloud_pc.gate import CloudBudgetGate, CloudGateBlocked
+from nanomuse.cloud_pc.provider import CloudProvider
 from nanomuse.cloud_pc.registry import CloudRegistry, record_from_provider
 from nanomuse.schema import RiskLevel, ToolResult
 from nanomuse.tools.base import BaseTool, CallAssessment, number_arg
@@ -41,7 +43,7 @@ class CloudRuntime:
         self,
         *,
         provider: str,
-        client: DaytonaClient | None,
+        client: CloudProvider | None,
         registry: CloudRegistry,
         gate: CloudBudgetGate,
         workspace: Path,
@@ -58,7 +60,7 @@ class CloudRuntime:
         self.idle_timeout_minutes = idle_timeout_minutes
         self.rate_per_vcpu_hour = rate_per_vcpu_hour
 
-    def require_client(self) -> DaytonaClient:
+    def require_client(self) -> CloudProvider:
         if self.client is None:
             raise CloudError(
                 "cloud_pc is enabled but no provider API key is configured; "
@@ -82,10 +84,11 @@ class _CloudTool(BaseTool):
 class CloudCreate(_CloudTool):
     name: str = "cloud_create"
     description: str = (
-        "Open a cloud computer (a Daytona sandbox): an isolated Linux machine with its own "
-        "filesystem that bills by the hour until destroyed. Sizes are the provider's snapshot "
-        "classes; asking for a vCPU count takes the smallest class that fits. Returns the "
-        "machine id. Use cloud_exec and cloud_file to work in it, and cloud_destroy when done."
+        "Open a cloud computer on the configured provider (Daytona or InstaBox): an isolated "
+        "Linux machine with its own filesystem that bills by the hour until destroyed. Sizes "
+        "are the provider's own classes; asking for a vCPU count takes the smallest class "
+        "that fits where the provider offers a choice. Returns the machine id. Use "
+        "cloud_exec and cloud_file to work in it, and cloud_destroy when done."
     )
     parameters: dict[str, Any] = {
         "type": "object",
@@ -118,22 +121,21 @@ class CloudCreate(_CloudTool):
             )
         try:
             client = rt.require_client()
-            data = await client.create_sandbox(
+            info = await client.create_machine(
                 name=name or "nanomuse",
                 cpu=max(1, int(cpu)),
                 auto_stop_minutes=rt.idle_timeout_minutes,
-                labels={"created_by": "nanomuse"},
             )
         except CloudError as exc:
             return ToolResult.fail(str(exc))
-        machine = record_from_provider(data, rt.provider, time.time())
+        machine = record_from_provider(info, rt.provider, time.time())
         if not machine.id:
             return ToolResult.fail("the provider answered without a machine id")
         rt.registry.add(machine)
         lines = [
             f"machine {machine.id} open on {rt.provider}: {machine.cpu} vCPU, "
-            f"{machine.memory} GiB RAM, {machine.disk} GiB disk, from snapshot "
-            f"{data.get('snapshot', 'unknown')}, state {data.get('state', 'unknown')}",
+            f"{machine.memory} GiB RAM, {machine.disk} GiB disk, from "
+            f"{info.detail or 'the provider default'}, state {info.state}",
             f"it auto-stops after {rt.idle_timeout_minutes} idle minutes and bills until "
             "cloud_destroy; destroy it when the work is done",
         ]
@@ -159,8 +161,8 @@ class CloudStatus(_CloudTool):
             if machine.live:
                 state = "unknown"
                 try:
-                    data = await rt.require_client().get_sandbox(machine.id)
-                    state = str(data.get("state", "unknown"))
+                    info = await rt.require_client().get_machine(machine.id)
+                    state = info.state
                 except CloudError as exc:
                     state = f"unreachable ({exc})"
                 lines.append(
@@ -354,7 +356,7 @@ class CloudDestroy(_CloudTool):
         rt = self.runtime
         try:
             machine = self._machine(machine_id)
-            await rt.require_client().delete_sandbox(machine.id)
+            await rt.require_client().delete_machine(machine.id)
         except CloudError as exc:
             return ToolResult.fail(str(exc))
         entry = rt.registry.finalise_destroy(
@@ -372,7 +374,7 @@ class CloudDestroy(_CloudTool):
 def build_cloud_tools(
     *,
     provider: str,
-    api_key: str,
+    client: CloudProvider | None,
     registry_path: Path,
     workspace: Path,
     monthly_budget_usd: float | None,
@@ -381,12 +383,12 @@ def build_cloud_tools(
     idle_timeout_minutes: int,
     rate_per_vcpu_hour: float,
 ) -> list[BaseTool]:
-    """Assemble the six tools over one runtime. An empty key still builds the
-    tools; every call then fails with the configuration error, so the person
-    hears what is missing instead of the tools silently not existing."""
+    """Assemble the six tools over one runtime. A missing client (no key
+    configured) still builds the tools; every call then fails with the
+    configuration error, so the person hears what is missing instead of
+    the tools silently not existing."""
     registry = CloudRegistry.load(registry_path)
     gate = CloudBudgetGate(registry, monthly_budget_usd, gate_mode)  # type: ignore[arg-type]
-    client = DaytonaClient(api_key) if api_key else None
     runtime = CloudRuntime(
         provider=provider,
         client=client,

@@ -360,13 +360,20 @@ sync = true              # default for the account-wide Data controls → Sync s
 # ------------------------------------------------------------------------------
 [cloud_pc]
 enabled = false
-provider = "daytona"
-api_key = "{{vault:DAYTONA_API_KEY}}"
+provider = "daytona"     # daytona | instabox
 monthly_budget_usd = 0   # 0: no cloud budget set
 mode = "warn"            # the gate over recorded cloud spend: off | warn | hard
 max_machines = 1
 idle_timeout_minutes = 30
-hourly_rate_per_vcpu_usd = 0.0666
+
+[cloud_pc.daytona]
+api_key = "{{vault:DAYTONA_API_KEY}}"
+hourly_rate_per_vcpu_usd = 0.0666  # measured effective rate, not a provider quote
+
+[cloud_pc.instabox]
+api_key = "{{vault:INSTABOX_API_KEY}}"
+template = "agent-browser"
+hourly_rate_per_vcpu_usd = 0.0085  # derived from the published per-second prices, see config docs
 
 # ------------------------------------------------------------------------------
 # The hub: this computer as one of the account's devices (docs/hub.md)

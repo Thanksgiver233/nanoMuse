@@ -454,13 +454,20 @@ Three Chinese services the built-in skills know come as MCP servers, and `config
 ```toml
 [cloud_pc]
 enabled                = false     # cloud computers the agent can open and destroy (cloud-pc.md)
-provider               = "daytona" # the only provider so far
-api_key                = "{{vault:DAYTONA_API_KEY}}"  # literal or vault reference; resolved at startup
+provider               = "daytona" # daytona | instabox
 monthly_budget_usd     = 0         # 0: no cloud budget set, the gate has nothing to read
 mode                   = "warn"    # the gate over recorded cloud spend: off | warn | hard
 max_machines           = 1         # live machines at once, across all tasks on this device
 idle_timeout_minutes   = 30        # provider auto-stop after this long idle
+
+[cloud_pc.daytona]
+api_key                = "{{vault:DAYTONA_API_KEY}}" # the provider's key, literal or vault reference
 hourly_rate_per_vcpu_usd = 0.0666  # the rate the spend record uses; measured, not a provider quote
+
+[cloud_pc.instabox]
+api_key                = "{{vault:INSTABOX_API_KEY}}"
+template               = "agent-browser"
+hourly_rate_per_vcpu_usd = 0.0085  # derived from InstaBox's published per-second prices
 ```
 
 ## `[server]`

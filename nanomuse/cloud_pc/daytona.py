@@ -1,4 +1,4 @@
-"""The Daytona provider client: platform API for the machine, toolbox API for work in it.
+"""The Daytona provider: platform API for the machine, toolbox API for work in it.
 
 Two hosts, one key (a bearer header on both):
 
@@ -6,10 +6,11 @@ Two hosts, one key (a bearer header on both):
 - ``https://proxy.app.daytona.io/toolbox/<sandbox id>`` runs commands, moves
   files and takes screenshots inside one running sandbox.
 
-The client is a thin async wrapper over exactly the calls the cloud tools
-make. It knows nothing about the registry, the budget or the Sentinel; the
-tools layer owns those. The key is handed in by the caller (resolved from
-the vault at wiring time) and never logged or echoed into an error.
+The client implements the provider protocol
+(:mod:`nanomuse.cloud_pc.provider`) and knows nothing about the registry,
+the budget or the Sentinel; the tools layer owns those. The key is handed
+in by the caller (resolved from the vault at wiring time) and never
+logged or echoed into an error.
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ import posixpath
 from typing import Any
 
 import httpx
+
+from nanomuse.cloud_pc.provider import MachineInfo
 
 PLATFORM_BASE = "https://app.daytona.io/api"
 TOOLBOX_BASE = "https://proxy.app.daytona.io/toolbox"
@@ -32,7 +35,21 @@ class CloudError(RuntimeError):
         super().__init__(message)
 
 
+def _info(data: dict[str, Any]) -> MachineInfo:
+    return MachineInfo(
+        id=str(data.get("id", "")),
+        name=str(data.get("name", "")),
+        cpu=int(data.get("cpu", 1)),
+        memory=int(data.get("memory", 1)),
+        disk=int(data.get("disk", 3)),
+        state=str(data.get("state", "unknown")),
+        detail=str(data.get("snapshot", "")),
+    )
+
+
 class DaytonaClient:
+    name = "daytona"
+
     def __init__(
         self,
         api_key: str,
@@ -53,29 +70,28 @@ class DaytonaClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    # -- platform: the machine itself ------------------------------------
+    # -- the machine itself ------------------------------------------------
 
-    async def list_snapshots(self) -> list[dict[str, Any]]:
-        data = await self._json("GET", f"{self._platform}/snapshots")
-        items = data.get("items")
-        return items if isinstance(items, list) else []
-
-    async def create_sandbox(
-        self,
-        *,
-        name: str,
-        cpu: int,
-        auto_stop_minutes: int,
-        labels: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
+    async def create_machine(self, *, name: str, cpu: int, auto_stop_minutes: int) -> MachineInfo:
         snapshot = await self._snapshot_for(cpu)
         body: dict[str, Any] = {
             "name": name,
             "snapshot": snapshot,
             "autoStopInterval": auto_stop_minutes,
-            "labels": labels or {},
+            "labels": {"created_by": "nanomuse"},
         }
-        return await self._json("POST", f"{self._platform}/sandbox", json=body)
+        return _info(await self._json("POST", f"{self._platform}/sandbox", json=body))
+
+    async def get_machine(self, machine_id: str) -> MachineInfo:
+        return _info(await self._json("GET", f"{self._platform}/sandbox/{machine_id}"))
+
+    async def delete_machine(self, machine_id: str) -> None:
+        await self._json("DELETE", f"{self._platform}/sandbox/{machine_id}", allow_empty=True)
+
+    async def list_snapshots(self) -> list[dict[str, Any]]:
+        data = await self._json("GET", f"{self._platform}/snapshots")
+        items = data.get("items")
+        return items if isinstance(items, list) else []
 
     async def _snapshot_for(self, cpu: int) -> str:
         """The general Linux snapshot class for a vCPU count.
@@ -89,68 +105,57 @@ class DaytonaClient:
         """
         classes = []
         for snap in await self.list_snapshots():
-            name = str(snap.get("name", ""))
+            snap_name = str(snap.get("name", ""))
             if not snap.get("general") or snap.get("state") != "active":
                 continue
-            if not name.startswith("daytona-") or "vm" in name or "gpu" in name:
+            if not snap_name.startswith("daytona-") or "vm" in snap_name or "gpu" in snap_name:
                 continue
-            classes.append((int(snap.get("cpu", 0)), name))
+            classes.append((int(snap.get("cpu", 0)), snap_name))
         classes.sort()
-        for size, name in classes:
+        for size, snap_name in classes:
             if size >= cpu:
-                return name
-        have = ", ".join(f"{size} vCPU ({name})" for size, name in classes) or "none"
+                return snap_name
+        have = ", ".join(f"{size} vCPU ({snap_name})" for size, snap_name in classes) or "none"
         raise CloudError(f"no daytona snapshot class fits {cpu} vCPU; the account offers: {have}")
 
-    async def get_sandbox(self, sandbox_id: str) -> dict[str, Any]:
-        return await self._json("GET", f"{self._platform}/sandbox/{sandbox_id}")
+    # -- work inside one machine ------------------------------------------
 
-    async def list_sandboxes(self) -> list[dict[str, Any]]:
-        data = await self._json("GET", f"{self._platform}/sandbox")
-        items = data.get("items")
-        return items if isinstance(items, list) else []
-
-    async def delete_sandbox(self, sandbox_id: str) -> None:
-        await self._json("DELETE", f"{self._platform}/sandbox/{sandbox_id}", allow_empty=True)
-
-    # -- toolbox: work inside one machine --------------------------------
-
-    async def execute(self, sandbox_id: str, command: str, timeout: float) -> tuple[int, str]:
+    async def execute(self, machine_id: str, command: str, timeout: float) -> tuple[int, str]:
         data = await self._json(
             "POST",
-            f"{self._toolbox}/{sandbox_id}/process/execute",
+            f"{self._toolbox}/{machine_id}/process/execute",
             json={"command": command, "timeout": int(timeout)},
         )
         return int(data.get("exitCode", 0)), str(data.get("result", ""))
 
-    async def upload(self, sandbox_id: str, remote_path: str, data: bytes) -> None:
+    async def upload(self, machine_id: str, remote_path: str, data: bytes) -> None:
         files = {"file": (posixpath.basename(remote_path) or "file", data)}
         response = await self._request(
             "POST",
-            f"{self._toolbox}/{sandbox_id}/files/upload-v2",
+            f"{self._toolbox}/{machine_id}/files/upload-v2",
             params={"path": remote_path},
             files=files,
         )
         self._raise_for_status(response, "upload")
 
-    async def download(self, sandbox_id: str, remote_path: str) -> bytes:
+    async def download(self, machine_id: str, remote_path: str) -> bytes:
         response = await self._request(
             "GET",
-            f"{self._toolbox}/{sandbox_id}/files/download",
+            f"{self._toolbox}/{machine_id}/files/download",
             params={"path": remote_path},
         )
         self._raise_for_status(response, "download")
         return response.content
 
-    async def screenshot(self, sandbox_id: str) -> bytes:
+    async def screenshot(self, machine_id: str) -> bytes:
         # A sandbox created from a plain image has no desktop running; starting
         # the computer-use service first is harmless when one already runs.
         try:
-            await self._request("POST", f"{self._toolbox}/{sandbox_id}/computeruse/start")
+            await self._request("POST", f"{self._toolbox}/{machine_id}/computeruse/start")
         except CloudError:
             pass
         response = await self._request(
-            "GET", f"{self._toolbox}/{sandbox_id}/computeruse/screenshot"
+            "GET", f"{self._toolbox}/{machine_id}/computeruse/screenshot"
         )
         self._raise_for_status(response, "screenshot")
         # The endpoint answers with a JSON envelope ({"screenshot": base64}),
