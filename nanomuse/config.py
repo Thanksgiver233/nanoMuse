@@ -296,8 +296,8 @@ class SentinelSettings(BaseModel):
     # permissions cover. Off by default. When on, a gatekeeper that cannot start
     # or cannot be reached refuses calls rather than letting them through
     # undecided, and the app itself does not start without one. The key comes
-    # from the OS keychain (service dev.nanomuse, account gatekeeper-audit-key);
-    # provision it with `nanomuse sentinel gatekeeper-keygen`.
+    # from the OS keychain (service nanomuse-gatekeeper, account audit-signing);
+    # provision it with `nanomuse gatekeeper-keygen`.
     gatekeeper: bool = False
     # Where the gatekeeper listens; the default is gatekeeper.sock in the data
     # directory. On macOS a socket path is limited to about 100 characters, so a

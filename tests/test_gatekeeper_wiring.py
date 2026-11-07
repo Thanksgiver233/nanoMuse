@@ -18,9 +18,10 @@ from nanomuse.sentinel.gatekeeper import GatekeeperClient, GatekeeperSupervisor
 from nanomuse.sentinel.grants import GrantStore
 from nanomuse.tools.base import CallAssessment
 from nanomuse.ui import ApprovalDecision, ApprovalRequest, HeadlessUI
+from tests.test_gatekeeper import _drop_spawn_key, _spawn_key
 from tests.test_sentinel import Echo, call
 
-_SUPPORTED = sys.platform in ("linux", "darwin")
+_SUPPORTED = sys.platform in ("linux", "darwin", "win32")
 pytestmark = pytest.mark.skipif(not _SUPPORTED, reason="the gatekeeper serves Linux and macOS only")
 
 
@@ -51,7 +52,7 @@ async def _started(tmp_path: Path, gk_settings: SentinelSettings) -> GatekeeperS
         gk_settings,
         tmp_path / "approvals.json",
         tmp_path / "gatekeeper-audit.jsonl",
-        secrets.token_bytes(32),
+        _spawn_key(secrets.token_bytes(32)),
     )
     await sup.start()
     return sup
@@ -87,6 +88,7 @@ async def test_guard_consults_the_gatekeeper(tmp_path: Path):
         assert json.loads(entries[-1])["tool"] == "echo"
     finally:
         await sup.stop()
+        _drop_spawn_key()
 
 
 async def test_gatekeeper_veto_is_final(tmp_path: Path):
@@ -102,6 +104,7 @@ async def test_gatekeeper_veto_is_final(tmp_path: Path):
         assert "the keeper says no" in (result.error or "")
     finally:
         await sup.stop()
+        _drop_spawn_key()
 
 
 async def test_gatekeeper_permission_settles_a_local_ask(tmp_path: Path):
@@ -119,6 +122,7 @@ async def test_gatekeeper_permission_settles_a_local_ask(tmp_path: Path):
         assert not [e for e in ui.events if e[0] == "approval"], "nobody was asked"
     finally:
         await sup.stop()
+        _drop_spawn_key()
 
 
 async def test_approval_is_mirrored_to_the_gatekeeper(tmp_path: Path):
@@ -138,12 +142,14 @@ async def test_approval_is_mirrored_to_the_gatekeeper(tmp_path: Path):
         assert client.grant("echo", None, "once") is False, "a one-off stores nothing"
     finally:
         await sup.stop()
+        _drop_spawn_key()
 
 
 async def test_dead_gatekeeper_refuses_calls(tmp_path: Path):
     sup = await _started(tmp_path, SentinelSettings())
     gate = _gate(tmp_path, sup, SentinelSettings(), HeadlessUI())
     await sup.stop()
+    _drop_spawn_key()
     result = await gate.guard(call("echo", text="hi"), Echo())
     assert not result.ok
     assert "gatekeeper is unavailable" in (result.error or "")
@@ -173,8 +179,12 @@ async def test_app_starts_and_stops_its_gatekeeper(tmp_path: Path):
         assert app.sentinel.gatekeeper is not None
         assert app._gatekeeper_supervisor is not None
         # Production spawns read the key from the OS keychain; the test hands
-        # the supervisor key material the way the prototype's tests do.
-        app._gatekeeper_supervisor.key_material = secrets.token_bytes(32)
+        # the supervisor key material the way the prototype's tests do, or
+        # provisions the keychain on Windows, where that is the only way in.
+        if sys.platform == "win32":
+            _spawn_key(secrets.token_bytes(32))
+        else:
+            app._gatekeeper_supervisor.key_material = secrets.token_bytes(32)
         await app.start()
         assert app.sentinel.gatekeeper.ping()
         await app.close()
@@ -183,11 +193,13 @@ async def test_app_starts_and_stops_its_gatekeeper(tmp_path: Path):
         sup = app._gatekeeper_supervisor
         if sup is not None and sup.started:
             await sup.stop()
+        _drop_spawn_key()
 
 
 async def test_app_without_a_key_refuses_to_start(tmp_path: Path):
     from nanomuse.sentinel.gatekeeper import GatekeeperUnavailable
 
+    _drop_spawn_key()  # the keychain must really be empty for this
     app = _app(tmp_path)
     # No key in this environment's keychain and none handed over: the child
     # refuses, and the app fails closed instead of running ungated.

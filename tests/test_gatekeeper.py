@@ -3,6 +3,7 @@ never crossing the socket, injection and shutdown both fail closed."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import secrets
@@ -93,8 +94,9 @@ _CASES = [
 ]
 
 
-_SUPPORTED = sys.platform == "linux" or sys.platform == "darwin"
-_UNSUPPORTED_REASON = "the gatekeeper needs Unix socket peer credentials (Linux or macOS)"
+_SUPPORTED = sys.platform in ("linux", "darwin", "win32")
+_UNSUPPORTED_REASON = "the gatekeeper needs a channel that can name its peer"
+_UNIX = sys.platform in ("linux", "darwin")
 
 
 def _socket_path(tmp_path: Path) -> Path:
@@ -104,6 +106,26 @@ def _socket_path(tmp_path: Path) -> Path:
         # tmp_path would overflow it before the gatekeeper even binds.
         return Path("/tmp") / f"nanomuse-gk-{os.getpid()}.sock"
     return path
+
+
+def _spawn_key(key: bytes) -> bytes | None:
+    """How a test hands a key to a supervisor: as material for the spawn
+    descriptor on Unix; on Windows descriptor passing does not exist, so
+    the key goes into the keychain, the production path, instead."""
+    if sys.platform == "win32":
+        import keyring
+
+        keyring.set_password(gatekeeper._KEYRING_SERVICE, gatekeeper._KEYRING_ACCOUNT, key.hex())
+        return None
+    return key
+
+
+def _drop_spawn_key() -> None:
+    if sys.platform == "win32":
+        import keyring
+
+        with contextlib.suppress(Exception):
+            keyring.delete_password(gatekeeper._KEYRING_SERVICE, gatekeeper._KEYRING_ACCOUNT)
 
 
 @pytest.fixture()
@@ -116,11 +138,12 @@ async def supervisor(tmp_path: Path):
         SETTINGS,
         tmp_path / "grants.json",
         tmp_path / "audit.jsonl",
-        key,
+        _spawn_key(key),
     )
     await sup.start()
     yield sup
     await sup.stop()
+    _drop_spawn_key()
 
 
 @pytest.fixture()
@@ -166,7 +189,7 @@ async def test_a_persistent_grant_survives_a_restart(tmp_path: Path):
     )
     key = secrets.token_bytes(32)
     sup = GatekeeperSupervisor(
-        _socket_path(tmp_path), SETTINGS, grants_path, tmp_path / "audit.jsonl", key
+        _socket_path(tmp_path), SETTINGS, grants_path, tmp_path / "audit.jsonl", _spawn_key(key)
     )
     await sup.start()
     try:
@@ -177,6 +200,7 @@ async def test_a_persistent_grant_survives_a_restart(tmp_path: Path):
         assert decision.grant_scope == "always"
     finally:
         await sup.stop()
+        _drop_spawn_key()
 
 
 def test_the_gatekeeper_signs_and_verifies_audit_entries(supervisor, client, tmp_path):
@@ -207,6 +231,7 @@ def test_the_gatekeeper_signs_and_verifies_audit_entries(supervisor, client, tmp
     assert client.verify_entry(entries[0]) is True
 
 
+@pytest.mark.skipif(not _UNIX, reason="this test speaks to the socket directly")
 def test_an_unknown_op_and_a_malformed_request_are_refused_without_a_key(
     supervisor: GatekeeperSupervisor,
 ):
@@ -228,6 +253,7 @@ def test_an_unknown_op_and_a_malformed_request_are_refused_without_a_key(
     sock.close()
 
 
+@pytest.mark.skipif(not _UNIX, reason="the peer credential here is the Unix one")
 def test_the_socket_reports_the_callers_own_credential(supervisor: GatekeeperSupervisor):
     # A peer from another uid is refused on the server side; with one user on
     # this box that path cannot be connected through, so this test asserts the
@@ -240,6 +266,7 @@ def test_the_socket_reports_the_callers_own_credential(supervisor: GatekeeperSup
 
 
 async def test_the_gatekeeper_fails_closed_without_a_key(tmp_path: Path):
+    _drop_spawn_key()  # on Windows the keychain must really be empty for this
     sup = GatekeeperSupervisor(
         _socket_path(tmp_path),
         SETTINGS,
@@ -264,6 +291,28 @@ def test_resolve_gatekeeper_key_reads_the_keychain_when_present(monkeypatch):
     fake.get_password = lambda service, account: key.hex()  # noqa: ARG005
     monkeypatch.setitem(sys.modules, "keyring", fake)
     assert resolve_gatekeeper_key(None) == key
+
+
+def test_provision_gatekeeper_key_writes_the_keychain(monkeypatch):
+    stored: dict[tuple[str, str], str] = {}
+    fake = types.ModuleType("keyring")
+    fake.set_password = lambda service, account, value: stored.update(  # noqa: ARG005
+        {(service, account): value}
+    )
+    monkeypatch.setitem(sys.modules, "keyring", fake)
+    gatekeeper.provision_gatekeeper_key()
+    assert list(stored) == [(gatekeeper._KEYRING_SERVICE, gatekeeper._KEYRING_ACCOUNT)]
+    assert (
+        len(bytes.fromhex(stored[(gatekeeper._KEYRING_SERVICE, gatekeeper._KEYRING_ACCOUNT)])) == 32
+    )
+
+
+def test_the_pipe_name_maps_an_address_to_one_pipe():
+    mapped = gatekeeper._pipe_name(Path("some/data/gatekeeper.sock"))
+    assert mapped.startswith("\\\\.\\pipe\\nanomuse-gatekeeper-")
+    assert gatekeeper._pipe_name("x") == gatekeeper._pipe_name("x")
+    assert gatekeeper._pipe_name("x") != gatekeeper._pipe_name("y")
+    assert gatekeeper._pipe_name("\\\\.\\pipe\\custom") == "\\\\.\\pipe\\custom"
 
 
 def test_a_dead_gatekeeper_is_a_refusal_not_a_silent_allow(
@@ -309,7 +358,7 @@ async def test_the_supervisor_restarts_a_crashed_gatekeeper(tmp_path: Path):
         SETTINGS,
         tmp_path / "grants.json",
         tmp_path / "audit.jsonl",
-        key,
+        _spawn_key(key),
     )
     await sup.start()
     assert GatekeeperClient(sup.socket_path).ping() is True
@@ -320,6 +369,7 @@ async def test_the_supervisor_restarts_a_crashed_gatekeeper(tmp_path: Path):
     await sup.start()
     assert GatekeeperClient(sup.socket_path).ping() is True
     await sup.stop()
+    _drop_spawn_key()
 
 
 def test_gatekeeper_sentinel_front_end_matches_policy(supervisor, client):
@@ -333,7 +383,7 @@ def test_gatekeeper_sentinel_front_end_matches_policy(supervisor, client):
         )
 
 
-@pytest.mark.skipif(not _SUPPORTED, reason=_UNSUPPORTED_REASON)
+@pytest.mark.skipif(not _UNIX, reason="these helpers are the Unix socket ones")
 def test_the_platform_helpers_find_the_platform_apis():
     assert _unix_socket_family() == socket.AF_UNIX
     assert _own_uid() == os.getuid()
@@ -380,6 +430,7 @@ def test_the_peer_credential_check_refuses_without_a_platform_api(tmp_path: Path
         other.close()
 
 
+@pytest.mark.skipif(not _UNIX, reason="the Windows client fails closed on the pipe instead")
 def test_the_client_fails_closed_without_unix_sockets(tmp_path: Path, monkeypatch):
     def _no_unix_family() -> int:
         raise GatekeeperUnavailable("Unix domain sockets are unavailable on this platform")

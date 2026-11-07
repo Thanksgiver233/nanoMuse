@@ -342,7 +342,7 @@ class AuditLog:
         try:
             import keyring  # type: ignore[import-not-found]
         except ImportError:
-            keyring = None
+            keyring = None  # type: ignore[assignment]
         if keyring is not None:
             try:
                 stored = keyring.get_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)

@@ -125,7 +125,7 @@ process of its own) is a later step, not a claim made here.
 
 The app's activity sheet (tap the avatar) reads the same file.
 
-## Gatekeeper (Linux and macOS, opt-in)
+## Gatekeeper (opt-in)
 
 `nanomuse/sentinel/gatekeeper.py` is the key separation the audit section
 above calls for. It is off by default; `[sentinel] gatekeeper = true` puts it
@@ -136,16 +136,22 @@ When it is on, the app spawns the gatekeeper as a child process at startup
 and stops it at shutdown. An app that asked for it does not start without
 it: no key, a platform that cannot name its peer, or a child that will not
 start all stop startup rather than letting the agent run ungated. The key is
-handed over on a file descriptor at spawn; in production the child reads it
-from the OS keychain instead (service dev.nanomuse, account
-gatekeeper-audit-key, provisioned by `nanomuse sentinel gatekeeper-keygen`).
-There is no file fallback. The agent side talks to the child over a Unix
-socket the child creates with mode 600; every connection is checked against
-the peer's user id (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS), and
-a peer running as another user gets no answer. Windows is refused outright
-until its named-pipe port lands, rather than served unauthenticated. On
+handed over on a file descriptor at spawn on Linux and macOS; on Windows,
+and in production generally, the child reads it from the OS keychain
+instead (service nanomuse-gatekeeper, account audit-signing, provisioned
+by `nanomuse gatekeeper-keygen`; on Windows that is Credential Manager,
+whose stored secrets Windows protects per user). There is no file fallback.
+
+The channel follows the platform. On Linux and macOS it is a Unix socket
+the child creates with mode 600, and every connection is checked against
+the peer's user id (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS). On
+Windows it is a named pipe whose access list grants only the owner's SID,
+and the client's SID is read from its process token before anything is
+served. A peer running as another user gets no answer on any platform. On
 macOS a socket path is limited to about 100 characters, so a deep data
-directory needs `[sentinel] gatekeeper_socket` set to a shorter path.
+directory needs `[sentinel] gatekeeper_socket` set to a shorter path; on
+Windows the configured path names the pipe instead (one pipe per data
+directory).
 
 Every tool call is consulted before anything runs, and the answers fold in
 conservatively:
@@ -168,7 +174,7 @@ of trusting the advice the agent computed, and signs its decision into its
 own audit log (`gatekeeper-audit.jsonl` in the data directory, a separate
 chain from the app's execution log). The request carries the call's
 arguments so the rules see them, but its audit entry records only their
-shapes, never their values, and the key never crosses the socket in either
+shapes, never their values, and the key never crosses the channel in either
 direction.
 
 What is not covered yet: the per-app permission prompt for the hands

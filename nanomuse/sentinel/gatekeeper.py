@@ -1,26 +1,32 @@
-"""Privilege separation: the gatekeeper holds the keys (Linux and macOS).
+"""Privilege separation: the gatekeeper holds the keys.
 
 One process, the gatekeeper, holds three things the agent process must never
 touch: the Sentinel rules (as a settings snapshot loaded once at start), the
-persistent grants file, and the audit signing key. The agent side
-(:class:`GatekeeperSentinel`) computes the policy's advice exactly as the
-in-process Sentinel would, then asks the gatekeeper over a Unix socket for
-the final decision; the gatekeeper re-evaluates with its own copy of the
-rules, checks its own grants, signs the audit entry, and answers. The key
-never crosses the socket, in either direction.
+persistent grants file, and the audit signing key. The agent side computes
+the policy's advice exactly as the in-process Sentinel would, then asks the
+gatekeeper for the final decision; the gatekeeper re-evaluates with its own
+copy of the rules, checks its own grants, signs the audit entry, and
+answers. The key never crosses the channel, in either direction.
 
-The key reaches the gatekeeper one of two ways, and no other: it is passed on
-a file descriptor at spawn (the launcher's job), or it is read from the OS
-keychain. There is deliberately no file fallback: when neither is available
-the gatekeeper refuses to start, and the agent side refuses to run a call
-(fail closed), rather than quietly running without a gate.
+The channel is a Unix socket on Linux and macOS, where the peer is named by
+its uid (SO_PEERCRED, LOCAL_PEERCRED), and a named pipe on Windows, where
+the pipe's DACL names only the owner's SID and the client's SID is read
+from its process token before anything is served. A platform with neither
+is refused rather than served unauthenticated.
 
-What this prototype is not: the gatekeeper is not wired into the running
-agent (the in-process Sentinel stays the default), the socket trusts the
-same-UID peer credential (a deployment that separates UIDs would check more),
-and the rules snapshot is loaded once, so editing the rules file afterwards
-changes nothing until the gatekeeper restarts. Those limits are stated here
-because the prototype's tests assert the boundary as built, not as wished.
+The key reaches the gatekeeper one of two ways, and no other: it is passed
+on a file descriptor at spawn (Unix only; the launcher's job), or it is read
+from the OS keychain (provisioned by `nanomuse gatekeeper-keygen`). There
+is deliberately no file fallback: when neither is available the gatekeeper
+refuses to start, and the agent side refuses to run a call (fail closed),
+rather than quietly running without a gate.
+
+The gatekeeper joins the running agent only when [sentinel] gatekeeper is
+on (nanomuse/sentinel/gate.py); the in-process Sentinel stays the default.
+Its limits, stated plainly: the peer check trusts the same user (a
+deployment that separates users would check more), and the rules snapshot
+is loaded once, so editing the rules afterwards changes nothing until the
+gatekeeper restarts.
 """
 
 from __future__ import annotations
@@ -28,13 +34,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import re
+import secrets
 import socket
 import struct
 import sys
 import time
+import types
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -66,10 +75,26 @@ class GatekeeperError(RuntimeError):
 
 
 # ------------------------------------------- platform prerequisites
-# The gatekeeper runs where a Unix socket can name its peer: Linux
-# (SO_PEERCRED) and macOS (LOCAL_PEERCRED).  Anywhere else it refuses
-# to start rather than serve a socket it cannot authenticate.
+# The gatekeeper runs where the channel can name its peer: Linux
+# (SO_PEERCRED) and macOS (LOCAL_PEERCRED) over a Unix socket, Windows
+# over a named pipe checked by SID.  Anywhere else it refuses to start
+# rather than serve a channel it cannot authenticate.
 _PLATFORM = sys.platform
+_IS_WINDOWS = _PLATFORM == "win32"
+
+
+def _pipe_name(address: Path | str) -> str:
+    """The Windows named pipe a gatekeeper address maps to.
+
+    The configuration speaks of a socket path on every platform; the pipe
+    namespace is flat, so an address already in pipe form is used as given
+    and any other address names a pipe after a hash of itself: one pipe
+    per data directory, stable across restarts."""
+    text = str(address)
+    if text.startswith("\\\\.\\pipe\\"):
+        return text
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    return f"\\\\.\\pipe\\nanomuse-gatekeeper-{digest}"
 
 
 def _unix_socket_family() -> int:
@@ -144,6 +169,255 @@ def _own_uid() -> int:
     return getuid()
 
 
+# ------------------------------------------------------- Windows named pipes
+# The Windows shape of the same separation: a named pipe whose DACL names
+# only the owner's SID, and the client's SID read from its process token
+# before anything is served. ctypes only, built lazily by _win32() and only
+# ever called on win32: nothing in this section runs on Linux or macOS.
+
+_TOKEN_QUERY = 0x0008
+_TOKEN_USER = 1
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_GENERIC_READ = 0x80000000
+_GENERIC_WRITE = 0x40000000
+_OPEN_EXISTING = 3
+_PIPE_ACCESS_DUPLEX = 0x00000003
+_PIPE_TYPE_BYTE = 0x00000000
+_PIPE_READMODE_BYTE = 0x00000000
+_PIPE_WAIT = 0x00000000
+_PIPE_NOWAIT = 0x00000001
+_PIPE_UNLIMITED_INSTANCES = 255
+_ERROR_FILE_NOT_FOUND = 2
+_ERROR_PIPE_BUSY = 231
+_ERROR_NO_DATA = 232
+_ERROR_PIPE_CONNECTED = 535
+
+_win32_cache: Any = None
+
+
+def _win32() -> Any:
+    """The Win32 entry points the pipe transport needs, with signatures.
+
+    Cached: building this loads kernel32 and advapi32, which only exist
+    on Windows, so it happens on first use and never at import."""
+    global _win32_cache
+    if _win32_cache is not None:
+        return _win32_cache
+    import ctypes
+    from ctypes import wintypes
+
+    windll = getattr(ctypes, "WinDLL", None)
+    if windll is None:  # unreachable: _win32() is only called on win32
+        raise GatekeeperError("Win32 is unavailable on this platform")
+    kernel32 = windll("kernel32", use_last_error=True)
+    advapi32 = windll("advapi32", use_last_error=True)
+
+    class SecurityAttributes(ctypes.Structure):
+        _fields_ = [
+            ("n_length", wintypes.DWORD),
+            ("security_descriptor", ctypes.c_void_p),
+            ("inherit_handle", wintypes.BOOL),
+        ]
+
+    def sig(fn: Any, restype: Any, *argtypes: Any) -> Any:
+        fn.restype = restype
+        fn.argtypes = list(argtypes)
+        return fn
+
+    api = types.SimpleNamespace(
+        ctypes=ctypes,
+        wintypes=wintypes,
+        SecurityAttributes=SecurityAttributes,
+        CreateNamedPipeW=sig(
+            kernel32.CreateNamedPipeW,
+            ctypes.c_void_p,
+            ctypes.c_wchar_p,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+        ),
+        ConnectNamedPipe=sig(
+            kernel32.ConnectNamedPipe, wintypes.BOOL, ctypes.c_void_p, ctypes.c_void_p
+        ),
+        DisconnectNamedPipe=sig(kernel32.DisconnectNamedPipe, wintypes.BOOL, ctypes.c_void_p),
+        SetNamedPipeHandleState=sig(
+            kernel32.SetNamedPipeHandleState,
+            wintypes.BOOL,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ),
+        GetNamedPipeClientProcessId=sig(
+            kernel32.GetNamedPipeClientProcessId,
+            wintypes.BOOL,
+            ctypes.c_void_p,
+            ctypes.POINTER(wintypes.DWORD),
+        ),
+        CreateFileW=sig(
+            kernel32.CreateFileW,
+            ctypes.c_void_p,
+            ctypes.c_wchar_p,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+        ),
+        WaitNamedPipeW=sig(
+            kernel32.WaitNamedPipeW, wintypes.BOOL, ctypes.c_wchar_p, wintypes.DWORD
+        ),
+        ReadFile=sig(
+            kernel32.ReadFile,
+            wintypes.BOOL,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p,
+        ),
+        WriteFile=sig(
+            kernel32.WriteFile,
+            wintypes.BOOL,
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p,
+        ),
+        FlushFileBuffers=sig(kernel32.FlushFileBuffers, wintypes.BOOL, ctypes.c_void_p),
+        CloseHandle=sig(kernel32.CloseHandle, wintypes.BOOL, ctypes.c_void_p),
+        GetCurrentProcess=sig(kernel32.GetCurrentProcess, ctypes.c_void_p),
+        OpenProcess=sig(
+            kernel32.OpenProcess,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        ),
+        LocalFree=sig(kernel32.LocalFree, ctypes.c_void_p, ctypes.c_void_p),
+        OpenProcessToken=sig(
+            advapi32.OpenProcessToken,
+            wintypes.BOOL,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p),
+        ),
+        GetTokenInformation=sig(
+            advapi32.GetTokenInformation,
+            wintypes.BOOL,
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ),
+        ConvertSidToStringSidW=sig(
+            advapi32.ConvertSidToStringSidW,
+            wintypes.BOOL,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_wchar_p),
+        ),
+        ConvertStringSecurityDescriptorToSecurityDescriptorW=sig(
+            advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW,
+            wintypes.BOOL,
+            ctypes.c_wchar_p,
+            wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(wintypes.DWORD),
+        ),
+    )
+    _win32_cache = api
+    return api
+
+
+def _invalid_handle(handle: Any) -> bool:
+    return handle is None or handle == 0xFFFFFFFFFFFFFFFF
+
+
+def _token_user_sid(api: Any, token: Any) -> str:
+    """The SID string of a token's user (TokenUser: a PSID, then attributes)."""
+    ctypes, wintypes = api.ctypes, api.wintypes
+    needed = wintypes.DWORD(0)
+    api.GetTokenInformation(token, _TOKEN_USER, None, 0, ctypes.byref(needed))
+    buffer = ctypes.create_string_buffer(needed.value)
+    if not api.GetTokenInformation(token, _TOKEN_USER, buffer, needed.value, ctypes.byref(needed)):
+        raise GatekeeperError("cannot read the token's user")
+    sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
+    text = ctypes.c_wchar_p()
+    if not api.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+        raise GatekeeperError("cannot render the token's SID")
+    try:
+        return str(text.value)
+    finally:
+        api.LocalFree(text)
+
+
+def _own_sid() -> str:
+    """This process's user SID, the pipe's one allowed peer."""
+    api = _win32()
+    token = api.ctypes.c_void_p()
+    if not api.OpenProcessToken(api.GetCurrentProcess(), _TOKEN_QUERY, api.ctypes.byref(token)):
+        raise GatekeeperError("cannot open this process's token")
+    try:
+        return _token_user_sid(api, token)
+    finally:
+        api.CloseHandle(token)
+
+
+def _pipe_peer_sid(api: Any, handle: Any) -> str:
+    """The SID of the process on the other end of the pipe."""
+    ctypes, wintypes = api.ctypes, api.wintypes
+    pid = wintypes.DWORD(0)
+    if not api.GetNamedPipeClientProcessId(handle, ctypes.byref(pid)):
+        raise GatekeeperError("cannot name the pipe's client process")
+    process = api.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if _invalid_handle(process):
+        raise GatekeeperError("cannot open the pipe's client process")
+    token = ctypes.c_void_p()
+    try:
+        if not api.OpenProcessToken(process, _TOKEN_QUERY, ctypes.byref(token)):
+            raise GatekeeperError("cannot open the pipe client's token")
+        try:
+            return _token_user_sid(api, token)
+        finally:
+            api.CloseHandle(token)
+    finally:
+        api.CloseHandle(process)
+
+
+def _pipe_security(api: Any, sid: str) -> tuple[Any, Any]:
+    """Security attributes whose DACL grants only ``sid`` full access, and
+    the descriptor behind them. The caller keeps both alive for as long as
+    the pipe exists: the attributes point into the descriptor."""
+    descriptor = api.ctypes.c_void_p()
+    sddl = f"D:P(A;;GA;;;{sid})"
+    if not api.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl, 1, api.ctypes.byref(descriptor), None
+    ):
+        raise GatekeeperError("cannot build the pipe's security descriptor")
+    attrs = api.SecurityAttributes()
+    attrs.n_length = api.ctypes.sizeof(attrs)
+    attrs.security_descriptor = descriptor
+    attrs.inherit_handle = False
+    return attrs, descriptor
+
+
+def _pipe_write_all(api: Any, handle: Any, data: bytes) -> bool:
+    written = api.wintypes.DWORD(0)
+    view = data
+    while view:
+        if not api.WriteFile(handle, view, len(view), api.ctypes.byref(written), None):
+            return False
+        view = view[written.value :]
+    return True
+
+
 # ------------------------------------------------------------------ the key
 def _read_key_from_fd(fd: int) -> bytes:
     chunks: list[bytes] = []
@@ -171,7 +445,7 @@ def resolve_gatekeeper_key(key_fd: int | None) -> bytes:
     try:
         import keyring  # type: ignore[import-not-found]
     except ImportError:
-        keyring = None
+        keyring = None  # type: ignore[assignment]
     if keyring is not None:
         try:
             stored = keyring.get_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
@@ -188,6 +462,23 @@ def resolve_gatekeeper_key(key_fd: int | None) -> bytes:
         "no gatekeeper key is available: pass one on a file descriptor at spawn, "
         "or store one in the OS keychain; refusing to fall back to a file"
     )
+
+
+def provision_gatekeeper_key() -> None:
+    """Create a fresh gatekeeper signing key in the OS keychain, replacing
+    any stored one. The one provisioning path (`nanomuse gatekeeper-keygen`):
+    the gatekeeper itself only ever reads the keychain, never writes it, and
+    rotating the key starts the gatekeeper's audit chain over."""
+    try:
+        import keyring  # type: ignore[import-not-found]
+    except ImportError:
+        keyring = None  # type: ignore[assignment]
+    if keyring is None:
+        raise GatekeeperUnavailable("the keyring package is not installed")
+    try:
+        keyring.set_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT, secrets.token_bytes(32).hex())
+    except Exception as exc:  # noqa: BLE001 - no backend, a locked keychain: say so
+        raise GatekeeperUnavailable(f"the keychain would not take the key: {exc}") from exc
 
 
 # ------------------------------------------------------------------ the server
@@ -230,6 +521,9 @@ class GatekeeperServer:
         return _peer_uid(conn)
 
     def serve_forever(self) -> None:
+        if _IS_WINDOWS:
+            self._serve_windows()
+            return
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
         if self.socket_path.exists():
             self.socket_path.unlink()
@@ -255,6 +549,91 @@ class GatekeeperServer:
             server.close()
             if self.socket_path.exists():
                 self.socket_path.unlink()
+
+    # ------------------------------------------------------------- Windows
+    def _serve_windows(self) -> None:
+        """The named-pipe shape of serve_forever: one connection at a time,
+        the peer's SID checked before anything is served, the same newline
+        JSON protocol as the socket. The supervisor stops this process by
+        terminating it, so the blocking connect needs no stop check."""
+        api = _win32()
+        ctypes, wintypes = api.ctypes, api.wintypes
+        name = _pipe_name(self.socket_path)
+        sid = _own_sid()
+        attrs, descriptor = _pipe_security(api, sid)
+        self._pipe_security = (attrs, descriptor)  # kept alive for the process
+        announced = False
+        while not self._stop:
+            handle = api.CreateNamedPipeW(
+                name,
+                _PIPE_ACCESS_DUPLEX,
+                _PIPE_TYPE_BYTE | _PIPE_READMODE_BYTE | _PIPE_WAIT,
+                _PIPE_UNLIMITED_INSTANCES,
+                65536,
+                65536,
+                0,
+                ctypes.byref(attrs),
+            )
+            if _invalid_handle(handle):
+                raise GatekeeperError(
+                    f"cannot create the gatekeeper pipe (win32 error {ctypes.get_last_error()})"
+                )
+            try:
+                if not announced:
+                    print("READY", flush=True)
+                    announced = True
+                connected = api.ConnectNamedPipe(handle, None) or (
+                    ctypes.get_last_error() == _ERROR_PIPE_CONNECTED
+                )
+                if not connected:
+                    continue
+                try:
+                    peer = _pipe_peer_sid(api, handle)
+                except GatekeeperError as exc:
+                    logger.warning("gatekeeper: {}", exc)
+                    continue
+                if peer != sid:
+                    logger.warning("gatekeeper: refusing a pipe peer from another user")
+                    continue
+                mode = wintypes.DWORD(_PIPE_READMODE_BYTE | _PIPE_NOWAIT)
+                api.SetNamedPipeHandleState(handle, ctypes.byref(mode), None, None)
+                self._serve_pipe(api, handle)
+            finally:
+                api.DisconnectNamedPipe(handle)
+                api.CloseHandle(handle)
+
+    def _serve_pipe(self, api: Any, handle: Any) -> None:
+        """Requests until the peer goes away or stays silent past the same
+        idle timeout the socket side uses."""
+        ctypes, wintypes = api.ctypes, api.wintypes
+        buffer = ctypes.create_string_buffer(65536)
+        read = wintypes.DWORD(0)
+        pending = b""
+        idle_since = time.monotonic()
+        while not self._stop:
+            if not api.ReadFile(handle, buffer, 65536, ctypes.byref(read), None):
+                if ctypes.get_last_error() == _ERROR_NO_DATA:
+                    if time.monotonic() - idle_since > _SOCKET_TIMEOUT_S:
+                        return
+                    # A short poll: the round trip is budgeted at 20 ms, and a
+                    # 20 ms sleep here would spend nearly all of it waiting for
+                    # the request to be noticed. The loop only spins while a
+                    # connection is open, and connections are one-shot.
+                    time.sleep(0.001)
+                    continue
+                return  # the peer closed, or the pipe broke
+            if read.value == 0:
+                return
+            idle_since = time.monotonic()
+            pending += buffer.raw[: read.value]
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                if line.strip():
+                    response = self._handle(line)
+                    payload = json.dumps(response, ensure_ascii=False).encode("utf-8") + b"\n"
+                    if not _pipe_write_all(api, handle, payload):
+                        return
+                    api.FlushFileBuffers(handle)
 
     def _serve_connection(self, conn: socket.socket) -> None:
         if self._peer_uid(conn) != _own_uid():
@@ -392,6 +771,16 @@ class GatekeeperClient:
 
     def _call(self, payload: dict[str, Any]) -> dict[str, Any]:
         line = json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n"
+        buf = self._call_windows(line) if _IS_WINDOWS else self._call_unix(line)
+        try:
+            response = json.loads(buf.decode("utf-8"))
+        except ValueError as exc:
+            raise GatekeeperUnavailable("the gatekeeper answered with bad JSON") from exc
+        if isinstance(response, dict) and response.get("error"):
+            raise GatekeeperUnavailable(f"the gatekeeper refused the request: {response['error']}")
+        return response
+
+    def _call_unix(self, line: bytes) -> bytes:
         sock = socket.socket(_unix_socket_family(), socket.SOCK_STREAM)
         try:
             sock.settimeout(self.timeout)
@@ -403,6 +792,7 @@ class GatekeeperClient:
                 if not chunk:
                     raise GatekeeperUnavailable("the gatekeeper closed the connection")
                 buf += chunk
+            return buf
         except GatekeeperUnavailable:
             raise
         except (TimeoutError, OSError) as exc:
@@ -410,13 +800,47 @@ class GatekeeperClient:
         finally:
             with contextlib.suppress(Exception):
                 sock.close()
+
+    def _call_windows(self, line: bytes) -> bytes:
+        api = _win32()
+        ctypes, wintypes = api.ctypes, api.wintypes
+        name = _pipe_name(self.socket_path)
+        deadline = time.monotonic() + self.timeout
+        handle: Any = None
+        while handle is None:
+            api.WaitNamedPipeW(name, max(1, int(self.timeout * 1000)))
+            candidate = api.CreateFileW(
+                name, _GENERIC_READ | _GENERIC_WRITE, 0, None, _OPEN_EXISTING, 0, None
+            )
+            if not _invalid_handle(candidate):
+                handle = candidate
+                break
+            err = ctypes.get_last_error()
+            # Busy means every instance is taken; file not found means the
+            # server is between instances, having just closed the previous
+            # connection and not yet created the next. Both clear within a
+            # few milliseconds, so both are retried rather than reported, on
+            # a short sleep: a long one would spend the round-trip budget on
+            # every retry.
+            if err in (_ERROR_PIPE_BUSY, _ERROR_FILE_NOT_FOUND) and time.monotonic() < deadline:
+                time.sleep(0.002)
+                continue
+            raise GatekeeperUnavailable(f"the gatekeeper cannot be reached (win32 error {err})")
         try:
-            response = json.loads(buf.decode("utf-8"))
-        except ValueError as exc:
-            raise GatekeeperUnavailable("the gatekeeper answered with bad JSON") from exc
-        if isinstance(response, dict) and response.get("error"):
-            raise GatekeeperUnavailable(f"the gatekeeper refused the request: {response['error']}")
-        return response
+            if not _pipe_write_all(api, handle, line):
+                raise GatekeeperUnavailable("the gatekeeper closed the connection")
+            buffer = ctypes.create_string_buffer(65536)
+            read = wintypes.DWORD(0)
+            buf = b""
+            while b"\n" not in buf:
+                if not api.ReadFile(handle, buffer, 65536, ctypes.byref(read), None):
+                    raise GatekeeperUnavailable("the gatekeeper closed the connection")
+                if read.value == 0:
+                    raise GatekeeperUnavailable("the gatekeeper closed the connection")
+                buf += buffer.raw[: read.value]
+            return buf
+        finally:
+            api.CloseHandle(handle)
 
     def ping(self) -> bool:
         try:
@@ -539,7 +963,16 @@ class GatekeeperSupervisor:
     async def start(self) -> None:
         if self.started:
             return
-        workdir = self.socket_path.parent
+        if self.key_material is not None and _IS_WINDOWS:
+            # Descriptor passing is Unix-only; on Windows the child takes the
+            # key from the keychain, provisioned by `nanomuse gatekeeper-keygen`.
+            raise GatekeeperUnavailable(
+                "on Windows the gatekeeper takes its key from the keychain only; "
+                "run `nanomuse gatekeeper-keygen` first"
+            )
+        # The settings file needs a real directory: beside the audit log on
+        # Windows, where the address names a pipe rather than a file.
+        workdir = self.audit_path.parent if _IS_WINDOWS else self.socket_path.parent
         workdir.mkdir(parents=True, exist_ok=True)
         settings_path = workdir / "gatekeeper-settings.json"
         settings_path.write_text(
@@ -617,7 +1050,7 @@ class GatekeeperSupervisor:
         if self._stderr is not None:
             self._stderr.cancel()
             self._stderr = None
-        if self.socket_path.exists():
+        if not _IS_WINDOWS and self.socket_path.exists():
             with contextlib.suppress(OSError):
                 self.socket_path.unlink()
 
@@ -661,5 +1094,6 @@ __all__ = [
     "GatekeeperServer",
     "GatekeeperSupervisor",
     "GatekeeperUnavailable",
+    "provision_gatekeeper_key",
     "resolve_gatekeeper_key",
 ]
