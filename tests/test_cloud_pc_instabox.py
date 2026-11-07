@@ -21,6 +21,7 @@ from nanomuse.cloud_pc.instabox import InstaBoxClient
 from nanomuse.cloud_pc.registry import CloudRegistry
 from nanomuse.tools.cloud_pc import (
     CloudCreate,
+    CloudDesktop,
     CloudDestroy,
     CloudExec,
     CloudFile,
@@ -68,7 +69,30 @@ def instabox_transport(calls: list[str], state: dict) -> httpx.MockTransport:
         if url.endswith("/v1/machines/m-1/resume"):
             state["machine_state"] = "running"
             return httpx.Response(202, json={"id": "op-3", "machineId": "m-1", "state": "pending"})
+        if url.endswith("/v1/machines/m-1/desktop"):
+            action = json.loads(request.content).get("action")
+            calls.append(f"desktop:{action}")
+            if action == "start":
+                state["desktop_running"] = True
+            return httpx.Response(
+                200,
+                json={
+                    "installed": True,
+                    "installing": False,
+                    "running": bool(state.get("desktop_running")),
+                    "failed": False,
+                },
+            )
         if url.endswith("/v1/machines/m-1/exec"):
+            body = json.loads(request.content)
+            cmd = body.get("cmd", "")
+            if "stdin" in body:
+                state.setdefault("stdin", []).append(body["stdin"])
+            if "xdotool" in cmd:
+                state.setdefault("xdo", []).append(cmd)
+                return httpx.Response(200, json={"exitCode": 0, "stdout": "", "stderr": ""})
+            if "scrot" in cmd or cmd.startswith("rm -f /tmp/instabox-screenshot"):
+                return httpx.Response(200, json={"exitCode": 0, "stdout": "", "stderr": ""})
             return httpx.Response(
                 200, json={"exitCode": 0, "stdout": "hello from inside", "stderr": ""}
             )
@@ -76,6 +100,8 @@ def instabox_transport(calls: list[str], state: dict) -> httpx.MockTransport:
             state["uploaded"] = request.content
             return httpx.Response(200, json={})
         if "/v1/machines/m-1/files/content" in url:
+            if "instabox-screenshot" in url:
+                return httpx.Response(200, content=PNG)
             return httpx.Response(200, content=b"downloaded body")
         if url.endswith("/v1/machines/m-1/usage"):
             return httpx.Response(
@@ -128,7 +154,9 @@ async def test_instabox_full_loop(tmp_path: Path) -> None:
     assert down.ok and (workspace / "out.txt").read_bytes() == b"downloaded body"
 
     shot = await CloudScreenshot(runtime=runtime).execute(machine_id="m-1")
-    assert not shot.ok and "A3" in (shot.error or "")
+    assert shot.ok, shot.error
+    saved = Path(shot.images[0])
+    assert saved.read_bytes() == PNG
 
     client = runtime.require_client()
     usage = await client.machine_usage("m-1")  # type: ignore[attr-defined]
@@ -180,6 +208,88 @@ async def test_same_instruction_both_providers(tmp_path: Path) -> None:
         assert result.ok and result.output == "hello from inside"
         done = await CloudDestroy(runtime=runtime).execute(machine_id=machine_id)
         assert done.ok, done.error
+
+
+async def test_instabox_desktop_verbs(tmp_path: Path) -> None:
+    state: dict = {}
+    runtime, _ = make_runtime(tmp_path, state)
+    desktop = CloudDesktop(runtime=runtime)
+    created = await CloudCreate(runtime=runtime).execute(name="gui")
+    assert created.ok, created.error
+
+    status = await desktop.execute(machine_id="m-1", action="status")
+    assert status.ok and "running=False" in status.output
+    started = await desktop.execute(machine_id="m-1", action="start")
+    assert started.ok, started.error
+
+    clicked = await desktop.execute(machine_id="m-1", action="click", x=640, y=400)
+    assert clicked.ok, clicked.error
+    assert state["xdo"][-1] == "export DISPLAY=:1; xdotool mousemove 640 400 click 1"
+
+    await desktop.execute(machine_id="m-1", action="click", x=10, y=10, button="right", double=True)
+    assert state["xdo"][-1].endswith("mousemove 10 10 click --repeat 2 --delay 80 3")
+
+    await desktop.execute(machine_id="m-1", action="drag", x=1, y=2, x2=3, y2=4)
+    assert "mousedown 1 sleep 0.1 mousemove 3 4 sleep 0.1 mouseup 1" in state["xdo"][-1]
+
+    await desktop.execute(machine_id="m-1", action="scroll", x=5, y=6, direction="down", amount=5)
+    assert state["xdo"][-1].endswith("mousemove 5 6 click --repeat 5 --delay 30 5")
+
+    typed = await desktop.execute(machine_id="m-1", action="type", text="héllo 'quoted'\nline2")
+    assert typed.ok, typed.error
+    assert state["stdin"][-1] == "héllo 'quoted'\nline2"
+    assert "héllo" not in state["xdo"][-1]  # the text never enters the command string
+
+    await desktop.execute(machine_id="m-1", action="key", keys=["ctrl", "l"])
+    assert state["xdo"][-1].endswith("xdotool key -- ctrl+l")
+    await desktop.execute(machine_id="m-1", action="key", keys=["enter"])
+    assert state["xdo"][-1].endswith("xdotool key -- Return")
+
+    opened = await desktop.execute(
+        machine_id="m-1", action="open_url", url="https://example.com/?a=1&b=2"
+    )
+    assert opened.ok, opened.error
+    bad = await desktop.execute(machine_id="m-1", action="open_url", url="file:///etc/passwd")
+    assert not bad.ok and "http" in (bad.error or "")
+
+    shot = await desktop.execute(machine_id="m-1", action="screenshot")
+    assert shot.ok and Path(shot.images[0]).read_bytes() == PNG
+
+
+async def test_desktop_verbs_start_the_desktop_when_needed(tmp_path: Path) -> None:
+    state: dict = {}
+    runtime, calls = make_runtime(tmp_path, state)
+    await CloudCreate(runtime=runtime).execute(name="gui")
+    result = await CloudDesktop(runtime=runtime).execute(machine_id="m-1", action="click", x=1, y=1)
+    assert result.ok, result.error
+    assert "desktop:start" in calls  # the verb started the desktop on its own
+
+
+async def test_desktop_input_is_instabox_only(tmp_path: Path) -> None:
+    from test_cloud_pc import fake_transport as daytona_fake
+
+    from nanomuse.cloud_pc.daytona import DaytonaClient
+
+    calls: list[str] = []
+    client = DaytonaClient("test-key-not-a-real-one", transport=daytona_fake(calls))
+    registry = CloudRegistry.load(tmp_path / "cloud_pc.json")
+    runtime = CloudRuntime(
+        provider="daytona",
+        client=client,
+        registry=registry,
+        gate=CloudBudgetGate(registry, None, "warn"),
+        workspace=tmp_path / "ws",
+        max_machines=1,
+        idle_timeout_minutes=30,
+        rate_per_vcpu_hour=0.10,
+    )
+    await CloudCreate(runtime=runtime).execute(name="probe")
+    result = await CloudDesktop(runtime=runtime).execute(
+        machine_id="sbx-1", action="click", x=1, y=1
+    )
+    assert not result.ok and "InstaBox" in (result.error or "")
+    shot = await CloudDesktop(runtime=runtime).execute(machine_id="sbx-1", action="screenshot")
+    assert shot.ok, shot.error  # screenshots stay on the protocol, every provider
 
 
 def test_provider_factory_and_config_shape(tmp_path: Path) -> None:

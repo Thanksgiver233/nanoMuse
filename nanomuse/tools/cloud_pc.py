@@ -1,10 +1,12 @@
 """Cloud computer tools: open a machine on a cloud provider, work in it, destroy it.
 
-Six tools over one runtime (:class:`CloudRuntime`): ``cloud_create``,
-``cloud_status``, ``cloud_exec``, ``cloud_file``, ``cloud_screenshot`` and
-``cloud_destroy``. The runtime talks to one provider behind the
-:class:`~nanomuse.cloud_pc.provider.CloudProvider` protocol (Daytona or
-InstaBox, chosen in the config); the tools never learn which.
+Seven tools over one runtime (:class:`CloudRuntime`): ``cloud_create``,
+``cloud_status``, ``cloud_exec``, ``cloud_file``, ``cloud_screenshot``,
+``cloud_desktop`` and ``cloud_destroy``. The runtime talks to one provider
+behind the :class:`~nanomuse.cloud_pc.provider.CloudProvider` protocol
+(Daytona or InstaBox, chosen in the config); the tools never learn which,
+except ``cloud_desktop``, whose input verbs are an InstaBox capability
+today and which says so when the provider is another one.
 
 How the Sentinel sees them, set here rather than left to defaults:
 
@@ -17,6 +19,10 @@ How the Sentinel sees them, set here rather than left to defaults:
   private data (the file's content comes back into the conversation).
 - ``cloud_screenshot`` is MODERATE and reads private data: a screen can
   hold anything the machine was showing.
+- ``cloud_desktop`` is assessed per action, the way the local computer
+  tool is: reading the desktop's state is SAFE, starting it MODERATE, a
+  screenshot MODERATE reading private data, and every verb that moves,
+  clicks or types is SENSITIVE, typing with egress.
 
 The API key reaches the runtime already resolved from the vault at wiring
 time. No tool prints it, and provider errors are scrubbed of it.
@@ -30,6 +36,7 @@ from typing import Any
 
 from nanomuse.cloud_pc.daytona import CloudError
 from nanomuse.cloud_pc.gate import CloudBudgetGate, CloudGateBlocked
+from nanomuse.cloud_pc.instabox import InstaBoxClient
 from nanomuse.cloud_pc.provider import CloudProvider
 from nanomuse.cloud_pc.registry import CloudRegistry, record_from_provider
 from nanomuse.schema import RiskLevel, ToolResult
@@ -37,7 +44,7 @@ from nanomuse.tools.base import BaseTool, CallAssessment, number_arg
 
 
 class CloudRuntime:
-    """Everything the six tools share: client, registry, gate, workspace."""
+    """Everything the seven tools share: client, registry, gate, workspace."""
 
     def __init__(
         self,
@@ -63,10 +70,20 @@ class CloudRuntime:
     def require_client(self) -> CloudProvider:
         if self.client is None:
             raise CloudError(
-                "cloud_pc is enabled but no provider API key is configured; "
-                "set [cloud_pc] api_key (a {{vault:NAME}} placeholder works) and restart"
+                "cloud_pc is enabled but no API key is configured for the selected "
+                "provider; set api_key in its [cloud_pc.<provider>] table "
+                "(a {{vault:NAME}} placeholder works) and restart"
             )
         return self.client
+
+    def require_instabox(self) -> InstaBoxClient:
+        client = self.require_client()
+        if not isinstance(client, InstaBoxClient):
+            raise CloudError(
+                f"desktop input is an InstaBox capability; the configured provider "
+                f"is {self.provider}, which offers screenshots only"
+            )
+        return client
 
 
 class _CloudTool(BaseTool):
@@ -321,15 +338,160 @@ class CloudScreenshot(_CloudTool):
             data = await self.runtime.require_client().screenshot(machine.id)
         except CloudError as exc:
             return ToolResult.fail(str(exc))
-        folder = self.runtime.workspace / "cloud_screenshots"
-        folder.mkdir(parents=True, exist_ok=True)
-        path = folder / f"{machine.id}-{int(time.time())}.png"
-        path.write_bytes(data)
-        return ToolResult(
-            output=f"screenshot of {machine.id} saved ({len(data)} bytes)",
-            system=f"saved screenshot to {path}",
-            images=[str(path)],
+        return save_screenshot(self.runtime, machine.id, data)
+
+
+def save_screenshot(runtime: CloudRuntime, machine_id: str, data: bytes) -> ToolResult:
+    folder = runtime.workspace / "cloud_screenshots"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{machine_id}-{int(time.time())}.png"
+    path.write_bytes(data)
+    return ToolResult(
+        output=f"screenshot of {machine_id} saved ({len(data)} bytes)",
+        system=f"saved screenshot to {path}",
+        images=[str(path)],
+    )
+
+
+_DESKTOP_ACTIONS = [
+    "status",
+    "start",
+    "screenshot",
+    "click",
+    "move",
+    "drag",
+    "scroll",
+    "type",
+    "key",
+    "open_url",
+]
+
+
+class CloudDesktop(_CloudTool):
+    name: str = "cloud_desktop"
+    description: str = (
+        "See and drive a cloud machine's desktop (InstaBox machines; on other providers "
+        "only the screenshot action works). Actions: status and start for the desktop "
+        "itself, screenshot for a picture of the whole screen, click, move, drag, scroll, "
+        "type, key (a key or a chord such as ['ctrl', 'l']) and open_url to open a page in "
+        "the machine's browser. Coordinates are pixels in the screenshot, which is the "
+        "desktop at its started size (1280x800 by default). Verbs start the desktop first "
+        "when it is not running."
+    )
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "machine_id": {"type": "string"},
+            "action": {"type": "string", "enum": _DESKTOP_ACTIONS},
+            "x": {"type": "number"},
+            "y": {"type": "number"},
+            "x2": {"type": "number", "description": "Drag destination x."},
+            "y2": {"type": "number", "description": "Drag destination y."},
+            "button": {"type": "string", "enum": ["left", "middle", "right"]},
+            "double": {"type": "boolean", "description": "Click twice (click action)."},
+            "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
+            "amount": {"type": "number", "description": "Scroll notches, 1 to 100 (default 3)."},
+            "text": {"type": "string", "description": "Text for the type action."},
+            "keys": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Keys for the key action, one key or a chord.",
+            },
+            "url": {"type": "string", "description": "Page for the open_url action."},
+            "width": {"type": "number", "description": "Desktop width for start (default 1280)."},
+            "height": {"type": "number", "description": "Desktop height for start (default 800)."},
+        },
+        "required": ["machine_id", "action"],
+    }
+    risk: RiskLevel = RiskLevel.SENSITIVE
+
+    def assess(self, args: dict[str, Any]) -> CallAssessment:
+        action = str(args.get("action", ""))
+        machine = args.get("machine_id", "?")
+        if action == "status":
+            return CallAssessment(risk=RiskLevel.SAFE, summary=f"cloud_desktop status: {machine}")
+        if action == "start":
+            return CallAssessment(
+                risk=RiskLevel.MODERATE, summary=f"cloud_desktop start: {machine}"
+            )
+        if action == "screenshot":
+            return CallAssessment(
+                risk=RiskLevel.MODERATE,
+                reads_private_data=True,
+                summary=f"cloud_desktop screenshot: {machine}",
+            )
+        if action == "type":
+            return CallAssessment(
+                risk=RiskLevel.SENSITIVE,
+                egress=True,
+                summary=f"cloud_desktop type on {machine}: {str(args.get('text', ''))[:120]}",
+            )
+        return CallAssessment(
+            risk=RiskLevel.SENSITIVE, summary=f"cloud_desktop {action} on {machine}"
         )
+
+    async def execute(
+        self,
+        machine_id: str = "",
+        action: str = "",
+        x: float = 0,
+        y: float = 0,
+        x2: float = 0,
+        y2: float = 0,
+        button: str = "left",
+        double: bool = False,
+        direction: str = "down",
+        amount: float = 3,
+        text: str = "",
+        keys: list[str] | None = None,
+        url: str = "",
+        width: float = 1280,
+        height: float = 800,
+        **_: Any,
+    ) -> ToolResult:
+        rt = self.runtime
+        try:
+            machine = self._machine(machine_id)
+            if action == "screenshot":
+                data = await rt.require_client().screenshot(machine.id)
+                return save_screenshot(rt, machine.id, data)
+            client = rt.require_instabox()
+            if action == "status":
+                state = await client.desktop_status(machine.id)
+                return ToolResult(
+                    output=(
+                        f"desktop on {machine.id}: installed={state.installed} "
+                        f"running={state.running} failed={state.failed}"
+                    )
+                )
+            if action == "start":
+                state = await client.desktop_start(
+                    machine.id, width=int(width) or 1280, height=int(height) or 800
+                )
+                return ToolResult(output=f"desktop on {machine.id} running: {state.running}")
+            if action == "click":
+                await client.desktop_click(
+                    machine.id, int(x), int(y), button=button, double=bool(double)
+                )
+            elif action == "move":
+                await client.desktop_move(machine.id, int(x), int(y))
+            elif action == "drag":
+                await client.desktop_drag(machine.id, int(x), int(y), int(x2), int(y2))
+            elif action == "scroll":
+                await client.desktop_scroll(
+                    machine.id, int(x), int(y), direction=direction, amount=int(amount)
+                )
+            elif action == "type":
+                await client.desktop_type(machine.id, text)
+            elif action == "key":
+                await client.desktop_key(machine.id, list(keys or []))
+            elif action == "open_url":
+                await client.desktop_open_url(machine.id, url)
+            else:
+                return ToolResult.fail(f"unknown desktop action {action!r}")
+        except CloudError as exc:
+            return ToolResult.fail(str(exc))
+        return ToolResult(output=f"desktop {action} done on {machine.id}")
 
 
 class CloudDestroy(_CloudTool):
@@ -383,7 +545,7 @@ def build_cloud_tools(
     idle_timeout_minutes: int,
     rate_per_vcpu_hour: float,
 ) -> list[BaseTool]:
-    """Assemble the six tools over one runtime. A missing client (no key
+    """Assemble the seven tools over one runtime. A missing client (no key
     configured) still builds the tools; every call then fails with the
     configuration error, so the person hears what is missing instead of
     the tools silently not existing."""
@@ -405,5 +567,6 @@ def build_cloud_tools(
         CloudExec(runtime=runtime),
         CloudFile(runtime=runtime),
         CloudScreenshot(runtime=runtime),
+        CloudDesktop(runtime=runtime),
         CloudDestroy(runtime=runtime),
     ]

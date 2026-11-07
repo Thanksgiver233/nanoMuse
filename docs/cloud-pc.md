@@ -1,8 +1,8 @@
 # Cloud computers
 
 With `[cloud_pc]` on, the agent can open a computer on a cloud provider, work
-in it and destroy it: six tools, `cloud_create`, `cloud_status`, `cloud_exec`,
-`cloud_file`, `cloud_screenshot` and `cloud_destroy`. Two providers sit
+in it and destroy it: seven tools, `cloud_create`, `cloud_status`, `cloud_exec`,
+`cloud_file`, `cloud_screenshot`, `cloud_desktop` and `cloud_destroy`. Two providers sit
 behind one protocol, picked by `[cloud_pc] provider`: Daytona, whose
 sandboxes are isolated Linux machines with their own kernel and filesystem,
 and InstaBox, whose machines are Firecracker microVMs with a persistent
@@ -86,6 +86,31 @@ wakes a machine the provider suspended for idleness. An InstaBox delete
 echoes the machine's own id in a confirm header, which the client always
 sends.
 
+## The desktop (InstaBox)
+
+An InstaBox machine from the `agent-browser` template has a Linux desktop,
+and `cloud_desktop` drives it: `status` and `start` for the desktop itself,
+`screenshot`, `click`, `move`, `drag`, `scroll`, `type`, `key` and
+`open_url`. Coordinates are pixels in the screenshot, which is the desktop
+at its started size (1280x800 by default). A verb starts the desktop first
+when it is not running, and `start` on a template without one installs it
+first, which takes about half a minute.
+
+The mechanism follows the provider's own SDK rather than its VNC stream:
+every verb is a command inside the machine over the same exec channel as
+`cloud_exec` (`xdotool` for input on `DISPLAY=:1`, `scrot` for the
+picture), and a screenshot is that picture downloaded as a file. Typed
+text travels as the exec call's stdin, never inside a command string.
+There is no new protocol and no new dependency; the price is one exec
+round trip per verb, which suits task-level driving and not continuous
+control. On Daytona the input verbs answer that desktop input is an
+InstaBox capability; screenshots there keep working as before.
+
+The Sentinel posture is per action, as with the local computer tool:
+`status` is safe, `start` moderate, a screenshot moderate and reading
+private data, and the verbs that move, click or type are sensitive, with
+typing also marked egress.
+
 ## What is not here yet
 
 - No idle sweeper: nothing yet destroys a machine the agent forgot. The
@@ -94,6 +119,5 @@ sends.
   gap is not a surprise.
 - Screenshots need a desktop in the machine. A Daytona sandbox from a
   plain image has none, and the tool returns the provider's error rather
-  than a picture of nothing. InstaBox exposes its desktop as a watch
-  stream rather than a screenshot call, so on InstaBox the tool refuses
-  with that reason until the graphical step (A3) wires the stream up.
+  than a picture of nothing. An InstaBox machine gets its desktop through
+  `cloud_desktop` above.
