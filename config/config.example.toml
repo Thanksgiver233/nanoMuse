@@ -355,6 +355,20 @@ models = true            # the account's models as a source (the apps' "Use nano
 sync = true              # default for the account-wide Data controls → Sync switch (the person's choice, once made, counts)
 
 # ------------------------------------------------------------------------------
+# Cloud computers: machines on a provider the agent can open and destroy
+# (docs/cloud-pc.md). Off by default; the key is the provider's, in the vault.
+# ------------------------------------------------------------------------------
+[cloud_pc]
+enabled = false
+provider = "daytona"
+api_key = "{{vault:DAYTONA_API_KEY}}"
+monthly_budget_usd = 0   # 0: no cloud budget set
+mode = "warn"            # the gate over recorded cloud spend: off | warn | hard
+max_machines = 1
+idle_timeout_minutes = 30
+hourly_rate_per_vcpu_usd = 0.0666
+
+# ------------------------------------------------------------------------------
 # The hub: this computer as one of the account's devices (docs/hub.md)
 # ------------------------------------------------------------------------------
 [hub]
