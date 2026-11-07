@@ -615,7 +615,11 @@ class GatekeeperServer:
                 if ctypes.get_last_error() == _ERROR_NO_DATA:
                     if time.monotonic() - idle_since > _SOCKET_TIMEOUT_S:
                         return
-                    time.sleep(0.02)
+                    # A short poll: the round trip is budgeted at 20 ms, and a
+                    # 20 ms sleep here would spend nearly all of it waiting for
+                    # the request to be noticed. The loop only spins while a
+                    # connection is open, and connections are one-shot.
+                    time.sleep(0.001)
                     continue
                 return  # the peer closed, or the pipe broke
             if read.value == 0:
