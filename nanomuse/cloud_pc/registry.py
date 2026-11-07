@@ -25,7 +25,8 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+
+from nanomuse.cloud_pc.provider import MachineInfo
 
 
 @dataclass
@@ -120,13 +121,13 @@ class CloudRegistry:
         return sum(s.cost_usd for s in self.spend if s.month == month)
 
 
-def record_from_provider(data: dict[str, Any], provider: str, now: float) -> MachineRecord:
+def record_from_provider(info: MachineInfo, provider: str, now: float) -> MachineRecord:
     return MachineRecord(
-        id=str(data.get("id", "")),
+        id=info.id,
         provider=provider,
-        name=str(data.get("name", "")),
-        cpu=int(data.get("cpu", 1)),
-        memory=int(data.get("memory", 1)),
-        disk=int(data.get("disk", 3)),
+        name=info.name,
+        cpu=info.cpu,
+        memory=info.memory,
+        disk=info.disk,
         created_at=now,
     )

@@ -712,29 +712,66 @@ class CompanionSettings(BaseModel):
     poll_seconds: float = Field(default=15.0, ge=1.0)
 
 
+class DaytonaSettings(BaseModel):
+    """One cloud provider's key and rate: Daytona.
+
+    ``hourly_rate_per_vcpu_usd`` is the account's effective rate as
+    measured during the 2026-11-04 soak, not a provider quote.
+    """
+
+    api_key: str = ""
+    hourly_rate_per_vcpu_usd: float = Field(default=0.0666, gt=0, allow_inf_nan=False)
+
+
+class InstaBoxSettings(BaseModel):
+    """One cloud provider's key and rate: InstaBox.
+
+    The rate is derived from the published per-second prices (vCPU
+    0.004 USD/h, memory 0.00225 USD/GiB/h) for the free plan's 4 vCPU /
+    8 GiB machine: (4 x 0.004 + 8 x 0.00225) / 4 per vCPU. The free plan
+    itself is free during its beta; the record prices at list so the
+    numbers stay comparable, and a machine's own metered usage
+    (``vcpuSeconds``, ``memGiBSeconds``) is what reconciliation reads.
+    """
+
+    api_key: str = ""
+    template: str = "agent-browser"
+    hourly_rate_per_vcpu_usd: float = Field(default=0.0085, gt=0, allow_inf_nan=False)
+
+
 class CloudPcSettings(BaseModel):
     """Cloud computers the agent can open, work in and destroy (Phase 9, line A).
 
-    Off by default. The provider is Daytona first: ``api_key`` is its key,
-    as a literal or a ``{{vault:NAME}}`` placeholder, resolved from the
-    vault at startup and never shown to the model. Machines bill from
-    create to destroy at ``hourly_rate_per_vcpu_usd`` times the vCPU
-    count; that rate is the account's effective rate as measured, not a
-    provider quote, and it is what the spend record and the budget gate
-    use until reconciling against provider bills lands (A2). ``mode`` is
-    the gate over that record: ``off`` records only, ``warn`` notes the
-    crossing on the create result, ``hard`` refuses a new machine once
-    the month's recorded cloud spend reaches ``monthly_budget_usd``.
+    Off by default. ``provider`` picks one of the per-provider tables
+    below it; each holds that provider's ``api_key`` (a literal or a
+    ``{{vault:NAME}}`` placeholder, resolved from the vault at startup
+    and never shown to the model) and the rate its spend is recorded at.
+    Machines bill from create to destroy at the provider's
+    ``hourly_rate_per_vcpu_usd`` times the vCPU count; the record and
+    the budget gate both use that figure. ``mode`` is the gate over the
+    record: ``off`` records only, ``warn`` notes the crossing on the
+    create result, ``hard`` refuses a new machine once the month's
+    recorded cloud spend reaches ``monthly_budget_usd``.
     """
 
     enabled: bool = False
-    provider: str = "daytona"
-    api_key: str = ""
+    provider: Literal["daytona", "instabox"] = "daytona"
     monthly_budget_usd: float = Field(default=0, ge=0, allow_inf_nan=False)
     mode: Literal["off", "warn", "hard"] = "warn"
     max_machines: int = Field(default=1, ge=1)
     idle_timeout_minutes: int = Field(default=30, ge=1)
-    hourly_rate_per_vcpu_usd: float = Field(default=0.0666, gt=0, allow_inf_nan=False)
+    daytona: DaytonaSettings = Field(default_factory=DaytonaSettings)
+    instabox: InstaBoxSettings = Field(default_factory=InstaBoxSettings)
+
+    def provider_key_and_rate(self) -> tuple[str, float, str]:
+        """The selected provider's (api key, rate, template)."""
+        if self.provider == "instabox":
+            return (
+                self.instabox.api_key,
+                self.instabox.hourly_rate_per_vcpu_usd,
+                self.instabox.template,
+            )
+        return self.daytona.api_key, self.daytona.hourly_rate_per_vcpu_usd, ""
 
 
 class CostSettings(BaseModel):

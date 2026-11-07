@@ -445,24 +445,26 @@ class NanoMuseApp:
         The provider key is resolved from the vault here, once; the tools
         hold the client, never the key as a value they can print.
         """
+        from nanomuse.cloud_pc import build_provider
         from nanomuse.tools.cloud_pc import build_cloud_tools
 
         s = self.settings
-        key = s.cloud_pc.api_key
+        key, rate, template = s.cloud_pc.provider_key_and_rate()
         if key and self.vault is not None:
             resolved = self.vault.resolve(key, strict=False)
             if isinstance(resolved, str):
                 key = resolved
+        client = build_provider(s.cloud_pc.provider, key, template=template) if key else None
         return build_cloud_tools(
             provider=s.cloud_pc.provider,
-            api_key=key,
+            client=client,
             registry_path=s.data_dir / "cloud_pc.json",
             workspace=s.agent.workspace,
             monthly_budget_usd=s.cloud_pc.monthly_budget_usd or None,
             gate_mode=s.cloud_pc.mode,
             max_machines=s.cloud_pc.max_machines,
             idle_timeout_minutes=s.cloud_pc.idle_timeout_minutes,
-            rate_per_vcpu_hour=s.cloud_pc.hourly_rate_per_vcpu_usd,
+            rate_per_vcpu_hour=rate,
         )
 
     def browser_tool(self) -> Browser:
