@@ -26,6 +26,12 @@ How the Sentinel sees them, set here rather than left to defaults:
 
 The API key reaches the runtime already resolved from the vault at wiring
 time. No tool prints it, and provider errors are scrubbed of it.
+
+Working in a machine (exec, a file move, a screenshot, a desktop verb)
+stamps its last-activity time in the record. That stamp is what the idle
+sweeper (companion side, :mod:`nanomuse.cloud_pc.sweeper`) reads: a
+machine nobody works in for the configured destroy interval is destroyed
+by the sweep, with the same spend entry a ``cloud_destroy`` writes.
 """
 
 from __future__ import annotations
@@ -84,6 +90,10 @@ class CloudRuntime:
                 f"is {self.provider}, which offers screenshots only"
             )
         return client
+
+    def touch(self, machine: Any) -> None:
+        """Stamp a machine's last activity: the idle sweeper reads this."""
+        self.registry.touch(machine, time.time())
 
 
 class _CloudTool(BaseTool):
@@ -184,7 +194,8 @@ class CloudStatus(_CloudTool):
                     state = f"unreachable ({exc})"
                 lines.append(
                     f"{machine.id} ({machine.name}) live, provider state {state}, "
-                    f"open for {machine.billed_seconds(now) / 60:.0f} min"
+                    f"open for {machine.billed_seconds(now) / 60:.0f} min, "
+                    f"idle for {machine.idle_seconds(now) / 60:.0f} min"
                 )
             else:
                 lines.append(
@@ -236,6 +247,7 @@ class CloudExec(_CloudTool):
             )
         except CloudError as exc:
             return ToolResult.fail(str(exc))
+        self.runtime.touch(machine)
         if code != 0:
             return ToolResult.fail(f"command exited {code}:\n{result}")
         return ToolResult(output=result or "(no output)")
@@ -295,6 +307,7 @@ class CloudFile(_CloudTool):
                 if not local.is_file():
                     return ToolResult.fail(f"no workspace file at {local_path}")
                 await client.upload(machine.id, remote_path, local.read_bytes())
+                self.runtime.touch(machine)
                 return ToolResult(
                     output=f"uploaded {local_path} ({local.stat().st_size} bytes) to "
                     f"{machine.id}:{remote_path}"
@@ -303,6 +316,7 @@ class CloudFile(_CloudTool):
                 data = await client.download(machine.id, remote_path)
                 local.parent.mkdir(parents=True, exist_ok=True)
                 local.write_bytes(data)
+                self.runtime.touch(machine)
                 return ToolResult(
                     output=f"downloaded {machine.id}:{remote_path} to {local_path} ({len(data)} bytes)"
                 )
@@ -338,6 +352,7 @@ class CloudScreenshot(_CloudTool):
             data = await self.runtime.require_client().screenshot(machine.id)
         except CloudError as exc:
             return ToolResult.fail(str(exc))
+        self.runtime.touch(machine)
         return save_screenshot(self.runtime, machine.id, data)
 
 
@@ -454,6 +469,7 @@ class CloudDesktop(_CloudTool):
             machine = self._machine(machine_id)
             if action == "screenshot":
                 data = await rt.require_client().screenshot(machine.id)
+                rt.touch(machine)
                 return save_screenshot(rt, machine.id, data)
             client = rt.require_instabox()
             if action == "status":
@@ -468,6 +484,7 @@ class CloudDesktop(_CloudTool):
                 state = await client.desktop_start(
                     machine.id, width=int(width) or 1280, height=int(height) or 800
                 )
+                rt.touch(machine)
                 return ToolResult(output=f"desktop on {machine.id} running: {state.running}")
             if action == "click":
                 await client.desktop_click(
@@ -491,6 +508,7 @@ class CloudDesktop(_CloudTool):
                 return ToolResult.fail(f"unknown desktop action {action!r}")
         except CloudError as exc:
             return ToolResult.fail(str(exc))
+        rt.touch(machine)
         return ToolResult(output=f"desktop {action} done on {machine.id}")
 
 

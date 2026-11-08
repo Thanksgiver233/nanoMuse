@@ -3,9 +3,12 @@
 One JSON file (``cloud_pc.json`` in the data directory) holds two lists:
 
 - ``machines``: every machine the tools opened, with its size, when it was
-  created and, once destroyed, when. A machine with no ``destroyed_at`` is
-  live as far as this device knows; the provider stays the source of truth
-  and :class:`~nanomuse.tools.cloud_pc.CloudStatus` refreshes from it.
+  created, when it was last worked in and, once destroyed, when. A machine
+  with no ``destroyed_at`` is live as far as this device knows; the provider
+  stays the source of truth and :class:`~nanomuse.tools.cloud_pc.CloudStatus`
+  refreshes from it. The last-activity time is what the idle sweeper
+  (``nanomuse.cloud_pc.sweeper``) reads; a record written before it existed
+  counts its creation as its last activity.
 - ``spend``: one entry per destroyed machine, written when the destroy tool
   finalises it: billed seconds and the cost at the configured rate. Month
   totals over these entries are what the budget gate reads.
@@ -39,10 +42,20 @@ class MachineRecord:
     disk: int
     created_at: float
     destroyed_at: float | None = None
+    last_activity_at: float | None = None
 
     @property
     def live(self) -> bool:
         return self.destroyed_at is None
+
+    @property
+    def last_activity(self) -> float:
+        """When the machine was last worked in; its creation, for a record
+        written before activity was tracked."""
+        return self.last_activity_at if self.last_activity_at is not None else self.created_at
+
+    def idle_seconds(self, now: float) -> float:
+        return max(0.0, now - self.last_activity)
 
     def billed_seconds(self, now: float | None = None) -> float:
         end = self.destroyed_at if self.destroyed_at is not None else (now or time.time())
@@ -100,6 +113,11 @@ class CloudRegistry:
     def live_machines(self) -> list[MachineRecord]:
         return [m for m in self.machines if m.live]
 
+    def touch(self, machine: MachineRecord, now: float) -> None:
+        """Record that a machine was worked in just now, and save."""
+        machine.last_activity_at = now
+        self.save()
+
     def finalise_destroy(
         self, machine: MachineRecord, *, rate_per_vcpu_hour: float, now: float
     ) -> SpendEntry:
@@ -130,4 +148,5 @@ def record_from_provider(info: MachineInfo, provider: str, now: float) -> Machin
         memory=info.memory,
         disk=info.disk,
         created_at=now,
+        last_activity_at=now,
     )

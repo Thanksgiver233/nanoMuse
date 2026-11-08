@@ -469,11 +469,31 @@ class MuseService:
         # the same conversations on every device of the account (contract C7; docs/every-device.md)
         self.sync = ConversationSync(self)
         # the always-on companion (docs/always-on.md): built from the [companion]
-        # settings, started with the service when enabled; off by default
+        # settings, started with the service when enabled; off by default.
+        # When cloud computers are on as well, the companion also carries
+        # the idle sweeper over the tools' own cloud runtime, so the record
+        # it sweeps is the one the tools write (Phase 9, A4). No provider
+        # client (no key configured) means no sweeper: the tools already
+        # fail loudly with that fact on every call.
+        sweeper = None
+        if settings.cloud_pc.enabled:
+            cloud_tool = self.app.tools.get("cloud_create")
+            runtime = getattr(cloud_tool, "runtime", None)
+            if runtime is not None and runtime.client is not None:
+                from nanomuse.cloud_pc.sweeper import CloudSweeper
+
+                sweeper = CloudSweeper(
+                    client=runtime.client,
+                    registry=runtime.registry,
+                    gate=runtime.gate,
+                    rate_per_vcpu_hour=runtime.rate_per_vcpu_hour,
+                    idle_destroy_minutes=settings.cloud_pc.idle_destroy_minutes,
+                )
         self.companion = CompanionService(
             build_companion_runtime(settings),
             publish=self.bus.publish,
             poll_seconds=settings.companion.poll_seconds,
+            sweeper=sweeper,
         )
         # when the app may ask for a star on GitHub: the relay's policy, a day at a time
         # (contract C1; GET /api/nudges hands it to the web app)
