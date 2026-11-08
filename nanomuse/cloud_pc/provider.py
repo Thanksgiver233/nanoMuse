@@ -5,10 +5,16 @@ protocol between them, so a second provider is a new class in this
 package and nothing else changes: the tools, the registry and the gate
 never learn which vendor they are talking to.
 
-One method set, six calls, mirroring the six tools. Every provider
+One method set, six calls, mirroring the machine tools. Every provider
 returns the same normalised :class:`MachineInfo`, so the record the
 registry keeps is comparable across vendors: that comparability is what
 the A2 same-instruction check and the spend record rest on.
+
+Desktop input (clicking, typing on a machine's screen) is deliberately
+not part of the protocol: today it is an InstaBox-only capability, on
+:class:`~nanomuse.cloud_pc.instabox.InstaBoxClient` beside this protocol,
+and the one tool that uses it says so when the provider is another one.
+The screenshot call above is every provider's.
 
 Errors are :class:`~nanomuse.cloud_pc.daytona.CloudError` from every
 provider, with messages safe to show the model (never a key, never a raw

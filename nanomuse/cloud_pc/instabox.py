@@ -8,17 +8,24 @@ kept. Changes (create, delete) answer ``202`` with an operation to
 follow, and a delete also needs the machine's own id echoed in an
 ``X-Confirm-Delete`` header, which this client always sends.
 
-Two honest limits of this step, both named rather than smoothed over:
-sizes are the plan's, so the create call sends no size at all and records
-what the machine reports; and the desktop is reached through a watch
-stream rather than a screenshot call, so :meth:`screenshot` refuses with
-that reason until the graphical step (A3) wires the stream up.
+One honest limit, named rather than smoothed over: sizes are the plan's,
+so the create call sends no size at all and records what the machine
+reports.
+
+The desktop (A3) follows the provider's own SDK rather than its VNC
+stream: every graphical verb is an exec inside the machine (``xdotool``
+for input, ``scrot`` for the picture, ``DISPLAY=:1`` throughout) plus a
+file download for the screenshot, over the same channels as the rest of
+this client. The lifecycle (install, start, status) is the one call that
+is a desktop endpoint of its own.
 """
 
 from __future__ import annotations
 
 import asyncio
+import shlex
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -27,6 +34,56 @@ from nanomuse.cloud_pc.daytona import CloudError
 from nanomuse.cloud_pc.provider import MachineInfo
 
 API_BASE = "https://api.instabox.sh"
+DESKTOP_DISPLAY = ":1"
+
+# Model-facing key names to xdotool keysyms, mirroring the table the
+# local hands use (nanomuse/computer/hands.py) so a key is spelled the
+# same way on a local screen and on this one. Names not in the table
+# pass through as keysyms of their own (a, F5, Return and friends).
+_XDO_KEYS = {
+    "ctrl": "ctrl",
+    "control": "ctrl",
+    "alt": "alt",
+    "option": "alt",
+    "shift": "shift",
+    "cmd": "super",
+    "command": "super",
+    "win": "super",
+    "super": "super",
+    "meta": "super",
+    "enter": "Return",
+    "return": "Return",
+    "esc": "Escape",
+    "escape": "Escape",
+    "backspace": "BackSpace",
+    "delete": "Delete",
+    "del": "Delete",
+    "tab": "Tab",
+    "space": "space",
+    "up": "Up",
+    "down": "Down",
+    "left": "Left",
+    "right": "Right",
+    "home": "Home",
+    "end": "End",
+    "pageup": "Page_Up",
+    "page_up": "Page_Up",
+    "pagedown": "Page_Down",
+    "page_down": "Page_Down",
+    "insert": "Insert",
+    "capslock": "Caps_Lock",
+    "printscreen": "Print",
+}
+_BUTTONS = {"left": 1, "middle": 2, "right": 3}
+_WHEEL = {"down": 5, "up": 4, "left": 6, "right": 7}
+
+
+@dataclass
+class DesktopState:
+    installed: bool
+    running: bool
+    failed: bool = False
+    log: str = ""
 
 
 class InstaBoxClient:
@@ -111,12 +168,16 @@ class InstaBoxClient:
     # -- work inside one machine ------------------------------------------
 
     async def execute(self, machine_id: str, command: str, timeout: float) -> tuple[int, str]:
+        return await self._run(machine_id, command, timeout)
+
+    async def _run(
+        self, machine_id: str, command: str, timeout: float, stdin: str | None = None
+    ) -> tuple[int, str]:
         await self._ensure_running(machine_id)
-        data = await self._json(
-            "POST",
-            f"{self._base}/v1/machines/{machine_id}/exec",
-            json={"cmd": command, "timeoutSeconds": int(timeout)},
-        )
+        body: dict[str, Any] = {"cmd": command, "timeoutSeconds": int(timeout)}
+        if stdin is not None:
+            body["stdin"] = stdin
+        data = await self._json("POST", f"{self._base}/v1/machines/{machine_id}/exec", json=body)
         out = str(data.get("stdout", ""))
         err = str(data.get("stderr", ""))
         if err:
@@ -145,10 +206,154 @@ class InstaBoxClient:
         return response.content
 
     async def screenshot(self, machine_id: str) -> bytes:
-        raise CloudError(
-            "instabox exposes its desktop as a watch stream, not a screenshot call; "
-            "wiring that stream up is the graphical step (A3), not this one"
+        await self._ensure_desktop(machine_id)
+        path = f"/tmp/instabox-screenshot-{uuid.uuid4().hex[:12]}.png"
+        command = (
+            f"export DISPLAY={DESKTOP_DISPLAY}; "
+            f"if command -v scrot >/dev/null; then scrot -o {path}; "
+            f"elif command -v import >/dev/null; then import -window root png:{path}; "
+            "else echo 'no screenshot tool in the machine (scrot or ImageMagick import)' "
+            ">&2; exit 127; fi"
         )
+        code, out = await self._run(machine_id, command, 60)
+        if code != 0:
+            raise CloudError(f"instabox screenshot failed (exit {code}): {out.strip()[:200]}")
+        try:
+            return await self.download(machine_id, path)
+        finally:
+            try:
+                await self._run(machine_id, f"rm -f {path}", 30)
+            except CloudError:
+                pass
+
+    # -- the desktop ---------------------------------------------------------
+
+    async def _desktop_call(self, machine_id: str, body: dict[str, Any]) -> DesktopState:
+        data = await self._json("POST", f"{self._base}/v1/machines/{machine_id}/desktop", json=body)
+        return DesktopState(
+            installed=bool(data.get("installed")),
+            running=bool(data.get("running")),
+            failed=bool(data.get("failed")),
+            log=str(data.get("log") or ""),
+        )
+
+    async def desktop_status(self, machine_id: str) -> DesktopState:
+        return await self._desktop_call(machine_id, {"action": "status"})
+
+    async def desktop_start(
+        self, machine_id: str, width: int = 1280, height: int = 800
+    ) -> DesktopState:
+        """Start the desktop, installing it first when the template has none.
+
+        Mirrors the provider SDK: a start on a machine without the desktop
+        answers installed false, so install runs and status is polled
+        until it lands (about half a minute) or reports failure.
+        """
+        state = await self.desktop_status(machine_id)
+        if state.running:
+            return state
+        if not state.installed:
+            if state.failed:
+                raise CloudError(f"instabox desktop install failed earlier: {state.log[:200]}")
+            state = await self._desktop_call(machine_id, {"action": "install"})
+            for _ in range(100):
+                if state.installed or state.failed:
+                    break
+                await asyncio.sleep(3)
+                state = await self.desktop_status(machine_id)
+            if state.failed:
+                raise CloudError(f"instabox desktop install failed: {state.log[:200]}")
+            if not state.installed:
+                raise CloudError("instabox desktop did not finish installing in time")
+        state = await self._desktop_call(
+            machine_id, {"action": "start", "width": width, "height": height}
+        )
+        if not state.running:
+            for _ in range(20):
+                await asyncio.sleep(2)
+                state = await self.desktop_status(machine_id)
+                if state.running:
+                    break
+        if not state.running:
+            raise CloudError("instabox desktop did not start")
+        return state
+
+    async def _ensure_desktop(self, machine_id: str) -> None:
+        state = await self.desktop_status(machine_id)
+        if not state.running:
+            await self.desktop_start(machine_id)
+
+    async def _xdo(self, machine_id: str, args: str, stdin: str | None = None) -> str:
+        code, out = await self._run(
+            machine_id, f"export DISPLAY={DESKTOP_DISPLAY}; xdotool {args}", 60, stdin=stdin
+        )
+        if code != 0:
+            raise CloudError(f"instabox desktop action failed (exit {code}): {out.strip()[:200]}")
+        return out
+
+    async def desktop_click(
+        self, machine_id: str, x: int, y: int, button: str = "left", double: bool = False
+    ) -> None:
+        number = _BUTTONS.get(button)
+        if number is None:
+            raise CloudError(f"button must be left, right or middle; got {button!r}")
+        repeat = " --repeat 2 --delay 80" if double else ""
+        await self._ensure_desktop(machine_id)
+        await self._xdo(machine_id, f"mousemove {x} {y} click{repeat} {number}")
+
+    async def desktop_move(self, machine_id: str, x: int, y: int) -> None:
+        await self._ensure_desktop(machine_id)
+        await self._xdo(machine_id, f"mousemove {x} {y}")
+
+    async def desktop_drag(self, machine_id: str, x: int, y: int, x2: int, y2: int) -> None:
+        await self._ensure_desktop(machine_id)
+        await self._xdo(
+            machine_id,
+            f"mousemove {x} {y} mousedown 1 sleep 0.1 mousemove {x2} {y2} sleep 0.1 mouseup 1",
+        )
+
+    async def desktop_scroll(
+        self, machine_id: str, x: int, y: int, direction: str = "down", amount: int = 3
+    ) -> None:
+        wheel = _WHEEL.get(direction)
+        if wheel is None:
+            raise CloudError(f"direction must be up, down, left or right; got {direction!r}")
+        if not 1 <= amount <= 100:
+            raise CloudError(f"amount must be a whole number from 1 to 100; got {amount}")
+        await self._ensure_desktop(machine_id)
+        await self._xdo(machine_id, f"mousemove {x} {y} click --repeat {amount} --delay 30 {wheel}")
+
+    async def desktop_type(self, machine_id: str, text: str) -> None:
+        if not text:
+            return
+        await self._ensure_desktop(machine_id)
+        # The text travels as the exec call's stdin, never inside the
+        # command string, so quotes and newlines need no escaping at all.
+        await self._xdo(machine_id, "type --delay 12 --file -", stdin=text)
+
+    async def desktop_key(self, machine_id: str, keys: list[str]) -> None:
+        if not keys:
+            raise CloudError("a key action needs at least one key")
+        chord = "+".join(_XDO_KEYS.get(k.lower(), k) for k in keys)
+        await self._ensure_desktop(machine_id)
+        await self._xdo(machine_id, f"key -- {shlex.quote(chord)}")
+
+    async def desktop_open_url(self, machine_id: str, url: str) -> None:
+        if not (url.startswith("https://") or url.startswith("http://")):
+            raise CloudError(f"only http and https URLs open in the browser; got {url!r}")
+        await self._ensure_desktop(machine_id)
+        command = (
+            f"export DISPLAY={DESKTOP_DISPLAY}; "
+            "b=$(command -v chromium || command -v chromium-browser || "
+            "command -v google-chrome) || { echo 'no browser in the machine' >&2; exit 127; }; "
+            'setsid nohup "$b" --no-first-run --no-default-browser-check '
+            f"--password-store=basic {shlex.quote(url)} >/dev/null 2>&1 </dev/null &"
+        )
+        code, out = await self._run(machine_id, command, 60)
+        if code != 0:
+            raise CloudError(
+                f"instabox could not open the browser (exit {code}): {out.strip()[:200]}"
+            )
 
     # -- state helpers ------------------------------------------------------
 
