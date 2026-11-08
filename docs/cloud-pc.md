@@ -24,6 +24,13 @@ state for the live ones, and the month's recorded spend.
 Machines auto-stop after `[cloud_pc] idle_timeout_minutes` idle (30 by
 default). Auto-stop is the provider's pause, not the end of the record: a
 machine counts as open, and against `max_machines`, until `cloud_destroy`.
+Past the pause, the idle sweeper is the backstop: with the companion on,
+each of its heartbeats checks the record, and a machine nobody has worked
+in for `[cloud_pc] idle_destroy_minutes` (240 by default) is destroyed by
+the sweep, with the same spend entry a `cloud_destroy` writes. Working in
+a machine (exec, a file move, a screenshot, a desktop verb) is what counts
+as activity; `cloud_status` shows how long each live machine has been
+idle. The sweep is described under "The idle sweeper" below.
 
 ## How the Sentinel sees them
 
@@ -70,6 +77,26 @@ result once the month's recorded spend reaches `monthly_budget_usd`, and
 destroy, a hard gate can still be crossed by the machine already running;
 `max_machines` (1 by default) is the bound that keeps that gap small.
 
+## The idle sweeper
+
+The sweeper runs on the companion's heartbeat, because the companion is
+the part that is awake while the person's devices are off. It exists only
+when both `[cloud_pc]` and `[companion]` are on and a provider key is
+configured; with the companion off, nothing sweeps, and the auto-stop
+interval and `cloud_status` remain the safety net.
+
+Each pass looks at the live machines in the record. One whose last
+activity is older than `idle_destroy_minutes` is destroyed through the
+provider, and the destroy finalises its spend entry, so a swept machine
+costs exactly what a hand-destroyed one costs. A destroy the provider
+refuses is logged and left live, so the next pass tries again; the sweep
+never marks a machine destroyed that the provider did not confirm. What
+a pass destroyed is published on the server's event bus as a
+`cloud_sweep` message, and when a pass leaves the month's recorded spend
+at or over the monthly budget, the sweep reports that crossing once for
+the month: from there the gate in `hard` mode refuses new machines, and
+the report is how the crossing is heard about.
+
 ## The key
 
 Each provider's `api_key` is written as a literal or as `{{vault:NAME}}`;
@@ -113,10 +140,6 @@ typing also marked egress.
 
 ## What is not here yet
 
-- No idle sweeper: nothing yet destroys a machine the agent forgot. The
-  companion-side sweep is the A4 step; until then the auto-stop interval
-  and `cloud_status` are the safety net, and both are named here so the
-  gap is not a surprise.
 - Screenshots need a desktop in the machine. A Daytona sandbox from a
   plain image has none, and the tool returns the provider's error rather
   than a picture of nothing. An InstaBox machine gets its desktop through

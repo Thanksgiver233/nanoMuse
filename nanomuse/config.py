@@ -752,6 +752,10 @@ class CloudPcSettings(BaseModel):
     record: ``off`` records only, ``warn`` notes the crossing on the
     create result, ``hard`` refuses a new machine once the month's
     recorded cloud spend reaches ``monthly_budget_usd``.
+    ``idle_timeout_minutes`` is the provider's own auto-stop, a pause;
+    ``idle_destroy_minutes`` is the longer line after which the
+    companion's idle sweeper destroys a machine nobody has worked in,
+    writing the same spend entry a hand destroy writes.
     """
 
     enabled: bool = False
@@ -760,6 +764,7 @@ class CloudPcSettings(BaseModel):
     mode: Literal["off", "warn", "hard"] = "warn"
     max_machines: int = Field(default=1, ge=1)
     idle_timeout_minutes: int = Field(default=30, ge=1)
+    idle_destroy_minutes: int = Field(default=240, ge=1)
     daytona: DaytonaSettings = Field(default_factory=DaytonaSettings)
     instabox: InstaBoxSettings = Field(default_factory=InstaBoxSettings)
 

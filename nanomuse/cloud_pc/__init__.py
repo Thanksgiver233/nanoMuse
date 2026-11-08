@@ -4,8 +4,9 @@ A cloud computer is a machine on someone else's cloud that the agent opens,
 works in and destroys. Two providers sit behind one protocol
 (:mod:`nanomuse.cloud_pc.provider`): Daytona sandboxes (A1) and InstaBox
 machines (A2). The package holds the provider clients, the local record of
-what machines exist and what they have cost, and the budget gate the
-create tool checks before spending anything.
+what machines exist and what they have cost, the budget gate the
+create tool checks before spending anything, and the idle sweeper the
+companion runs against forgotten machines (A4).
 
 The tools themselves live in :mod:`nanomuse.tools.cloud_pc`; this package
 is the machinery under them.
@@ -16,6 +17,7 @@ from nanomuse.cloud_pc.gate import CloudBudgetGate, CloudGateBlocked
 from nanomuse.cloud_pc.instabox import InstaBoxClient
 from nanomuse.cloud_pc.provider import CloudProvider, MachineInfo
 from nanomuse.cloud_pc.registry import CloudRegistry, MachineRecord
+from nanomuse.cloud_pc.sweeper import CloudSweeper, SweepReport
 
 __all__ = [
     "CloudBudgetGate",
@@ -23,10 +25,12 @@ __all__ = [
     "CloudGateBlocked",
     "CloudProvider",
     "CloudRegistry",
+    "CloudSweeper",
     "DaytonaClient",
     "InstaBoxClient",
     "MachineInfo",
     "MachineRecord",
+    "SweepReport",
     "build_provider",
 ]
 

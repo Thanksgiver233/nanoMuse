@@ -158,5 +158,7 @@ def test_the_server_leaves_a_disabled_companion_off(settings: Settings) -> None:
             "running": False,
             "channel": "",
             "inbox": 0,
+            "cloud_sweep": False,
+            "swept": 0,
         }
     assert not service.companion.running

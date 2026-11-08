@@ -459,6 +459,7 @@ monthly_budget_usd     = 0         # 0: no cloud budget set, the gate has nothin
 mode                   = "warn"    # the gate over recorded cloud spend: off | warn | hard
 max_machines           = 1         # live machines at once, across all tasks on this device
 idle_timeout_minutes   = 30        # provider auto-stop after this long idle
+idle_destroy_minutes   = 240       # the companion's sweeper destroys a machine idle this long
 
 [cloud_pc.daytona]
 api_key                = "{{vault:DAYTONA_API_KEY}}" # the provider's key, literal or vault reference
