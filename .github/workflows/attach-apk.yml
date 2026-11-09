@@ -1,0 +1,36 @@
+name: attach apk to release
+
+# One-off helper: take the debug APK artifact built by the Android workflow
+# (run 42611183458) and attach it to the v1.0.9 release under its release
+# name, with its checksum. The checksum is compared against the value the
+# main session computed from the same artifact before anything is uploaded.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  attach:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nanoMuse-debug-apk
+          run-id: 42611183458
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: apk
+      - name: Rename, verify, upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED: 1dfc62ce443f261e9fdeb2c080c3ea784f493459ed12edd5ee06703550616750
+        run: |
+          mv apk/app-debug.apk nanoMuse-1.0.9-arm64.apk
+          actual=$(sha256sum nanoMuse-1.0.9-arm64.apk | cut -d' ' -f1)
+          echo "sha256: $actual"
+          test "$actual" = "$EXPECTED"
+          sha256sum nanoMuse-1.0.9-arm64.apk > nanoMuse-1.0.9-arm64.apk.sha256
+          gh release upload v1.0.9 nanoMuse-1.0.9-arm64.apk nanoMuse-1.0.9-arm64.apk.sha256 --repo Thanksgiver233/nanoMuse
