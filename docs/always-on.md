@@ -99,6 +99,19 @@ Its model calls are recorded under its assignment id, so the
 reconcile's evidence check sees them; a message it sent or a file it
 wrote still leaves no line in the cost ledger.
 
+Each assignment is also frozen at enqueue with a risk ceiling: the
+tighter of its parent's ceiling and its preset's, so a ceiling only
+narrows down a tree (research, verify and any consult cap at safe;
+execute caps at the top of the scale, and a squad's root takes the
+ceiling its caller names, sensitive unless a tighter one is given).
+While the assignment runs, a call assessed above the ceiling is
+refused in front of the Sentinel and written to the assignment's
+events; no approval or token inside the assignment can lift it,
+because a token settles one action and the ceiling bounds the whole
+assignment. Calls at or under the ceiling reach the Sentinel
+unchanged. The full rule lives in the `[squad]` section of the
+configuration page.
+
 ## Sync v2
 
 `nanomuse/sync_v2.py` holds versioned records and tiered recording
