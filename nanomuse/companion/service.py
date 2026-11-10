@@ -12,7 +12,11 @@ channel being down must never take the companion, or the server,
 with it.
 
 Starting and stopping follow the runtime's own rule: a disabled
-companion's service starts nothing and reports not running.
+companion's service starts nothing and reports not running.  When
+the server wired a squad task ledger, a successful start reconciles
+it once before the loop begins: open assignments from a previous
+process are settled as interrupted or spared one restart, on the
+evidence of the cost ledger, and nothing is resumed.
 """
 
 from __future__ import annotations
@@ -24,6 +28,12 @@ from typing import Any
 from nanomuse.cloud_pc.sweeper import CloudSweeper
 from nanomuse.companion.runtime import CompanionRuntime
 from nanomuse.logger import logger
+from nanomuse.team.store import (
+    EvidenceFn,
+    ReconcileReport,
+    SquadStore,
+    reconcile_on_startup,
+)
 
 
 class CompanionService:
@@ -36,6 +46,8 @@ class CompanionService:
         publish: Callable[[dict[str, Any]], None] | None = None,
         poll_seconds: float = 15.0,
         sweeper: CloudSweeper | None = None,
+        squad_store: SquadStore | None = None,
+        squad_evidence: EvidenceFn | None = None,
     ) -> None:
         self.runtime = runtime
         self._publish = publish or (lambda event: None)
@@ -44,6 +56,13 @@ class CompanionService:
         # each heartbeat offers it one pass over the cloud record, and what
         # it destroys or reports is published like a companion message.
         self.sweeper = sweeper
+        # The squad task ledger, when the server wired one: starting the
+        # companion reconciles it once (verdicts written in the ledger,
+        # nothing resumed), so work left open by a dead process is
+        # accounted for before anything new begins.
+        self.squad_store = squad_store
+        self.squad_evidence = squad_evidence
+        self.squad_reconcile: ReconcileReport | None = None
         self.inbox: list[dict[str, Any]] = []
         self.sweep_log: list[str] = []
         self._task: asyncio.Task[None] | None = None
@@ -56,6 +75,14 @@ class CompanionService:
         """Start the runtime and its loop.  False when the companion is off."""
         if not self.runtime.start():
             return False
+        if self.squad_store is not None and self.squad_reconcile is None:
+            self.squad_reconcile = reconcile_on_startup(self.squad_store, self.squad_evidence)
+            if self.squad_reconcile.interrupted or self.squad_reconcile.retry_marked:
+                logger.info(
+                    "squad ledger reconciled: {} interrupted, {} spared one restart",
+                    len(self.squad_reconcile.interrupted),
+                    len(self.squad_reconcile.retry_marked),
+                )
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._loop(), name="companion")
         return True

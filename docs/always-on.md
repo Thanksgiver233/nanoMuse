@@ -5,7 +5,8 @@ harnesses with fake transports and fixture data, whose shapes were the
 contract a real implementation must keep. Phase 6 has since made two
 of the four pieces real (the companion's Telegram channel and on-disk
 state, and the cost ledger fed from real runs, with a budget gate).
-The squad and sync v2 sections still describe scaffolding. Each
+The squad section now describes a real task ledger under the still
+scaffolded squad run; sync v2 still describes scaffolding. Each
 section below says plainly which state it is in.
 
 ## The companion runtime
@@ -58,6 +59,25 @@ sensitive action on a forged, reused, or wrong-target token is
 refused, and the refusal is written to the squad audit log. A
 sensitive action runs only on a live, single-use token the steward
 issued for that specialist, action, and target.
+
+A squad formed with a task ledger (`nanomuse/team/store.py`,
+`squad.db` in the data directory) also writes each dispatch down as
+an assignment: where it came from, its kind (work, consult, notify),
+the role it went to, and the brief, under a root for the squad.
+Enqueue guards keep the book honest: a parent must still be open,
+work never flows back to an ancestor, an open brief is never handed
+out twice under the same parent, and a task tree stays within a
+depth cap and an optional size cap (the cap counts assignments; real
+spend still belongs to the cost ledger and its monthly gate).
+Assignments move through a seven-state lifecycle, and a terminal
+state is written once, when the assignment settles, and never
+revised. When the companion starts with a ledger on disk it
+reconciles it once before its loop begins: an assignment the cost
+ledger shows already spent on a model call is settled as
+interrupted and never handed out again, one with no such record is
+spared exactly one restart, and nothing is resumed by the reconcile
+itself. Recording is all that exists so far: no recorded assignment
+runs yet, and the specialists still only exchange frames.
 
 ## Sync v2
 
@@ -139,6 +159,5 @@ behaviour is covered by the compressed simulation, and the
 wall-clock soak is still outstanding. The bill reconciliation is
 done, as the cost section above describes. The companion's Hub
 transport between runtimes is still the in-memory fake, and the
-squad and sync v2 sections above still describe scaffolding: their
-shapes are the contract, and a real transport and a real squad run
-remain to be built.
+squad's run and sync v2 remain scaffolding: the ledger above is
+real, and a real transport and a real squad run remain to be built.
