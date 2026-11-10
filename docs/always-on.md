@@ -5,8 +5,9 @@ harnesses with fake transports and fixture data, whose shapes were the
 contract a real implementation must keep. Phase 6 has since made two
 of the four pieces real (the companion's Telegram channel and on-disk
 state, and the cost ledger fed from real runs, with a budget gate).
-The squad section now describes a real task ledger under the still
-scaffolded squad run; sync v2 still describes scaffolding. Each
+The squad section now describes a real task ledger and an executing
+squad run that stays off by default and unwired in the server and the
+companion; sync v2 still describes scaffolding. Each
 section below says plainly which state it is in.
 
 ## The companion runtime
@@ -76,8 +77,27 @@ reconciles it once before its loop begins: an assignment the cost
 ledger shows already spent on a model call is settled as
 interrupted and never handed out again, one with no such record is
 spared exactly one restart, and nothing is resumed by the reconcile
-itself. Recording is all that exists so far: no recorded assignment
-runs yet, and the specialists still only exchange frames.
+itself.
+
+A squad can also run what it records, when a caller forms it with a
+store, an agent factory (`nanomuse/team/runner.py`) and `[squad]
+execute` on; neither the server nor the companion forms one that way
+yet. Each specialist is then a role preset
+(`nanomuse/team/presets.py`): the same agent assembled with a role
+prompt, a tool face, and a model tier. Research and verify get a
+read-only face on the cheap tier, judged per call from the tools' own
+risk assessments, with a gate in front of the Sentinel that only adds
+refusals; verify works to a checklist. Execute gets the full face on
+the default tier, its calls going through the Sentinel exactly as the
+main agent's do. The default dispatch is a consult, which runs
+read-only whatever role it was given; only an explicit work dispatch
+lets execute act, and notify dispatches are only recorded. A run that
+settles writes its summary to the ledger and sends the steward a
+result frame with the assignment id and a short summary. A subtask
+whose tool calls make no progress is stopped and settled as stalled.
+Its model calls are recorded under its assignment id, so the
+reconcile's evidence check sees them; a message it sent or a file it
+wrote still leaves no line in the cost ledger.
 
 ## Sync v2
 
