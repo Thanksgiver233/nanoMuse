@@ -489,11 +489,29 @@ class MuseService:
                     rate_per_vcpu_hour=runtime.rate_per_vcpu_hour,
                     idle_destroy_minutes=settings.cloud_pc.idle_destroy_minutes,
                 )
+        # The squad task ledger joins only when a previous run wrote
+        # one: with no squad.db there is nothing to reconcile, and the
+        # store is not created just by starting the server.  Evidence
+        # comes from the cost ledger file: an assignment that already
+        # spent on a model call is never handed out again.
+        squad_store = None
+        squad_evidence = None
+        if settings.squad_db.exists():
+            from nanomuse.team.store import SquadStore, ledger_evidence
+
+            squad_store = SquadStore(
+                settings.squad_db,
+                max_depth=settings.squad.max_depth,
+                max_per_root=settings.squad.max_per_root,
+            )
+            squad_evidence = ledger_evidence(settings.cost_ledger_file)
         self.companion = CompanionService(
             build_companion_runtime(settings),
             publish=self.bus.publish,
             poll_seconds=settings.companion.poll_seconds,
             sweeper=sweeper,
+            squad_store=squad_store,
+            squad_evidence=squad_evidence,
         )
         # when the app may ask for a star on GitHub: the relay's policy, a day at a time
         # (contract C1; GET /api/nudges hands it to the web app)

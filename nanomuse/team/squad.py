@@ -12,6 +12,14 @@ alone.  A specialist cannot request an approval, cannot answer one,
 and cannot run a sensitive action without an approval token the
 steward issued.  Every refusal is written to the squad audit log, so a
 bypass attempt leaves evidence even when it fails.
+
+A squad may also carry a task ledger (``nanomuse.team.store``).  With
+one attached, each dispatch is written down as an assignment under a
+root for the squad, past the ledger's enqueue guards: a dispatch the
+guards refuse (a duplicate brief still open, the root at its cap) is
+not sent at all, and dispatch returns False for it just as it does
+for an unknown role.  Without a store the squad is exactly the
+in-memory Phase 4 shape, and nothing is recorded.
 """
 
 from __future__ import annotations
@@ -20,6 +28,8 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from typing import Any
+
+from nanomuse.team.store import MODES, EnqueueRefused, SquadStore
 
 
 class SquadRefusal(RuntimeError):
@@ -183,16 +193,31 @@ class Squad:
 
     ``Squad.single()`` is the default mode: no bus, no specialists, the
     steward alone.  ``Squad.form()`` builds the optional squad mode.
+
+    ``store`` attaches the task ledger (see the module docstring);
+    ``origin`` names where the squad's work comes from in that ledger.
+    The ledger records dispatches as queued assignments; running them
+    is a later step, so a recorded assignment stays queued until
+    something settles it.
     """
 
     ROLES = ("research", "execute", "verify")
 
-    def __init__(self, *, formed: bool) -> None:
+    def __init__(
+        self,
+        *,
+        formed: bool,
+        store: SquadStore | None = None,
+        origin: str = "user",
+    ) -> None:
         self.formed = formed
         self.bus = SquadBus()
         self.gate = ApprovalGate()
         self.specialists: dict[str, Specialist] = {}
         self.created_at = time.time()
+        self.store = store
+        self.origin = origin
+        self._root_id: str | None = None
         if formed:
             self.bus.register(ApprovalGate.STEWARD)
             for role in self.ROLES:
@@ -201,12 +226,45 @@ class Squad:
                 self.specialists[role] = Specialist(member_id, role, self.bus)
 
     @classmethod
-    def single(cls) -> Squad:
-        return cls(formed=False)
+    def single(cls, *, store: SquadStore | None = None) -> Squad:
+        return cls(formed=False, store=store)
 
     @classmethod
-    def form(cls) -> Squad:
-        return cls(formed=True)
+    def form(cls, *, store: SquadStore | None = None, origin: str = "user") -> Squad:
+        return cls(formed=True, store=store, origin=origin)
+
+    @property
+    def root_assignment_id(self) -> str | None:
+        """The ledger root this squad's dispatches hang under, once
+        the first dispatch has opened it."""
+        return self._root_id
+
+    def _record_dispatch(self, role: str, action: str, body: dict[str, Any]) -> bool:
+        """Write one dispatch to the ledger.  False when a guard
+        refuses it, in which case the frame is not sent either."""
+        store = self.store
+        if store is None:
+            return True
+        try:
+            if self._root_id is None:
+                root = store.create_root(
+                    origin=self.origin,
+                    mode="work",
+                    role=ApprovalGate.STEWARD,
+                    brief="squad session",
+                )
+                self._root_id = root.id
+            mode = body.get("mode")
+            store.enqueue(
+                parent_id=self._root_id,
+                origin=self.origin,
+                mode=mode if mode in MODES else "work",
+                role=role,
+                brief=action,
+            )
+        except EnqueueRefused:
+            return False
+        return True
 
     def dispatch(self, role: str, action: str, body: dict[str, Any]) -> bool:
         """The coordinator (steward side) sends work to one specialist."""
@@ -214,6 +272,8 @@ class Squad:
             return False
         specialist = self.specialists.get(role)
         if specialist is None:
+            return False
+        if not self._record_dispatch(role, action, body):
             return False
         return self.bus.send(
             SquadFrame(
