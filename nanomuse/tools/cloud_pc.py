@@ -110,6 +110,8 @@ class _CloudTool(BaseTool):
 
 class CloudCreate(_CloudTool):
     name: str = "cloud_create"
+    purpose: str = "Open a cloud computer on the configured provider."
+    keywords: list[str] = ["cloud", "computer", "machine", "open", "daytona", "instabox"]
     description: str = (
         "Open a cloud computer on the configured provider (Daytona or InstaBox): an isolated "
         "Linux machine with its own filesystem that bills by the hour until destroyed. Sizes "
@@ -173,6 +175,8 @@ class CloudCreate(_CloudTool):
 
 class CloudStatus(_CloudTool):
     name: str = "cloud_status"
+    purpose: str = "List the cloud machines this device has opened, with their state."
+    keywords: list[str] = ["cloud", "machines", "status", "list"]
     description: str = (
         "List the cloud machines this device has opened, with the provider's current state "
         "for the live ones and the recorded spend for the month."
@@ -211,6 +215,8 @@ class CloudStatus(_CloudTool):
 
 class CloudExec(_CloudTool):
     name: str = "cloud_exec"
+    purpose: str = "Run a shell command inside a cloud machine."
+    keywords: list[str] = ["cloud", "command", "run", "machine"]
     description: str = (
         "Run a shell command inside a cloud machine opened with cloud_create and return its "
         "combined output and exit code. This is shell on a remote, billable machine."
@@ -255,6 +261,8 @@ class CloudExec(_CloudTool):
 
 class CloudFile(_CloudTool):
     name: str = "cloud_file"
+    purpose: str = "Move one file between the workspace and a cloud machine."
+    keywords: list[str] = ["cloud", "file", "upload", "download", "transfer"]
     description: str = (
         "Move one file between the workspace and a cloud machine. direction=upload sends a "
         "workspace file to remote_path on the machine; direction=download brings remote_path "
@@ -327,6 +335,8 @@ class CloudFile(_CloudTool):
 
 class CloudScreenshot(_CloudTool):
     name: str = "cloud_screenshot"
+    purpose: str = "Take a screenshot of a cloud machine's desktop."
+    keywords: list[str] = ["cloud", "screenshot", "desktop", "picture"]
     description: str = (
         "Take a screenshot of a cloud machine's desktop and save it into the workspace. "
         "Machines without a desktop environment answer with an error."
@@ -384,6 +394,8 @@ _DESKTOP_ACTIONS = [
 
 class CloudDesktop(_CloudTool):
     name: str = "cloud_desktop"
+    purpose: str = "See and drive a cloud machine's desktop: click, type, open pages."
+    keywords: list[str] = ["cloud", "desktop", "click", "type", "gui"]
     description: str = (
         "See and drive a cloud machine's desktop (InstaBox machines; on other providers "
         "only the screenshot action works). Actions: status and start for the desktop "
@@ -514,6 +526,8 @@ class CloudDesktop(_CloudTool):
 
 class CloudDestroy(_CloudTool):
     name: str = "cloud_destroy"
+    purpose: str = "Destroy a cloud machine; its disk and everything on it are gone."
+    keywords: list[str] = ["cloud", "destroy", "delete", "machine"]
     description: str = (
         "Destroy a cloud machine opened with cloud_create. Its disk and everything on it are "
         "gone for good, billing stops, and the machine's cost is written to the record."
