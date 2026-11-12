@@ -6,6 +6,22 @@ All notable changes to nanoMuse. The format follows [Keep a Changelog](https://k
 
 ### Cloud
 
+### Runtime
+
+### Web
+
+### Desktop
+
+### Android
+
+### iOS
+
+### Project
+
+## [1.0.10] - 2026-11-12 · Triage
+
+### Cloud
+
 - **A finished Hub call is remembered briefly so a dropped caller never runs it twice.** The relay kept only calls still waiting: a caller whose connection died after the answer reached the relay re-sent the call and the target ran it again. Finished results are kept for five minutes (at most 256 across the relay), keyed by account, call id and calling device, and a re-sent call with the same id marked as a retry gets the kept result back; a plain re-send is still a new call with a recycled id, and a different device reusing the id still gets a fresh execution. An answer that never reached the relay cannot be replayed, and the docs say so.
 - **The relay's checks ran on Windows as well as Linux.** Both platforms checked the cloud service and built and tested its admin console. Changes to the showcase mirror also ran these checks because the cloud tests load those scripts. The committed-build check remained on Linux. ([#670](https://github.com/nano-muse/nanoMuse/pull/670))
 - **The local self-hosting script printed a working command for sign-in codes.** Its hint now enters `cloud/` before reading the relay logs, so it can be copied from the repository root. ([#716](https://github.com/nano-muse/nanoMuse/pull/716))
